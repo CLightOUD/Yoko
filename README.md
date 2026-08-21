@@ -1,6 +1,8 @@
 # Yoko
 YOur Kins Online -- Agent designed for elderly people.
 
+API contract: [API_SPEC.md](API_SPEC.md)
+
 ## Development environment
 
 - Windows 10 or 11
@@ -56,6 +58,8 @@ commit `.env`.
 # 中文说明
 
 Yoko（YOur Kins Online）是一个面向老年人的 Agent 系统。
+
+API 接口规范：[API_SPEC.md](API_SPEC.md)
 
 ## 开发环境
 

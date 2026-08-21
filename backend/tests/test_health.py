@@ -10,3 +10,11 @@ def test_health() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_health_openapi_response_model() -> None:
+    response_schema = app.openapi()["paths"]["/api/health"]["get"]["responses"]["200"]
+
+    assert response_schema["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/HealthResponse"
+    }
