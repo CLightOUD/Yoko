@@ -1,121 +1,91 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import { useEffect, useState } from 'react'
+import { BarChart3, Bell, BookMarked, MessageCircle } from 'lucide-react'
+import { getHealth } from './api/client'
+import ChatPage from './pages/ChatPage'
+import RemindersPage from './pages/RemindersPage'
+import MemoriesPage from './pages/MemoriesPage'
+import MetricsPage from './pages/MetricsPage'
 import './App.css'
 
+const TABS = [
+  { key: 'chat', label: '对话', icon: MessageCircle },
+  { key: 'reminders', label: '提醒', icon: Bell },
+  { key: 'memories', label: '记忆', icon: BookMarked },
+  { key: 'metrics', label: '指标', icon: BarChart3 },
+]
+
+function HealthBadge({ status }) {
+  if (status === 'checking') {
+    return (
+      <span className="health">
+        <span className="health__dot" aria-hidden="true" />
+        连接中…
+      </span>
+    )
+  }
+  if (status === 'ok') {
+    return (
+      <span className="health">
+        <span className="health__dot health__dot--ok" aria-hidden="true" />
+        服务正常
+      </span>
+    )
+  }
+  return (
+    <span className="health">
+      <span className="health__dot health__dot--error" aria-hidden="true" />
+      服务未连接
+    </span>
+  )
+}
+
 function App() {
-  const [count, setCount] = useState(0)
+  const [tab, setTab] = useState('chat')
+  const [health, setHealth] = useState('checking')
+
+  useEffect(() => {
+    let alive = true
+    getHealth()
+      .then((data) => {
+        if (alive) setHealth(data.status === 'ok' ? 'ok' : 'error')
+      })
+      .catch(() => {
+        if (alive) setHealth('error')
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app">
+      <header className="app-header">
+        <h1>Yoko 关怀助手</h1>
+        <HealthBadge status={health} />
+      </header>
 
-      <div className="ticks"></div>
+      <main className="app-main">
+        {tab === 'chat' && <ChatPage />}
+        {tab === 'reminders' && <RemindersPage />}
+        {tab === 'memories' && <MemoriesPage />}
+        {tab === 'metrics' && <MetricsPage />}
+      </main>
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <nav className="app-nav" aria-label="主导航">
+        {TABS.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? 'nav-item nav-item--active' : 'nav-item'}
+            onClick={() => setTab(key)}
+            aria-current={tab === key ? 'page' : undefined}
+          >
+            <Icon aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
   )
 }
 
