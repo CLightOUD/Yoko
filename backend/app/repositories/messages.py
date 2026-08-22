@@ -78,6 +78,24 @@ class MessageRepository(BaseRepository):
             ).fetchone()
         return row is not None
 
+    def list_for_request(
+        self,
+        *,
+        user_id: str,
+        request_id: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._connection(connection) as active_connection:
+            rows = active_connection.execute(
+                """
+                SELECT * FROM messages
+                WHERE user_id = ? AND request_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (user_id, request_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_recent(
         self,
         *,

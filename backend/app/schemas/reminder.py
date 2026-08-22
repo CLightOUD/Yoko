@@ -10,10 +10,11 @@ from pydantic.experimental.missing_sentinel import MISSING
 from backend.app.schemas.common import APIModel, UserId, validate_timezone_name
 
 
-RepeatType = Literal["none", "daily"]
+RepeatType = Literal["none", "daily", "weekly"]
 ReminderStatus = Literal["active", "completed", "deleted"]
 ReminderListStatus = Literal["active", "completed", "deleted", "all"]
-ReminderTitle = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+ReminderInputTitle = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+ReminderTitle = Annotated[str, StringConstraints(min_length=1, max_length=4000)]
 
 
 def _validate_future(value: AwareDatetime) -> AwareDatetime:
@@ -42,7 +43,7 @@ class ReminderView(APIModel):
 
 class ReminderCreateRequest(APIModel):
     user_id: UserId
-    title: ReminderTitle
+    title: ReminderInputTitle
     next_trigger_at: AwareDatetime
     timezone: str = "Asia/Shanghai"
     repeat_type: RepeatType = "none"
@@ -60,7 +61,7 @@ class ReminderCreateRequest(APIModel):
 
 class ReminderUpdateRequest(APIModel):
     user_id: UserId
-    title: ReminderTitle | MISSING = MISSING
+    title: ReminderInputTitle | MISSING = MISSING
     next_trigger_at: AwareDatetime | MISSING = MISSING
     timezone: str | MISSING = MISSING
     repeat_type: RepeatType | MISSING = MISSING

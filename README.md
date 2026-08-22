@@ -32,10 +32,41 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 Keep this terminal open, then visit the API documentation:
 <http://127.0.0.1:8000/docs>
 
+The backend initializes SQLite once during application startup. Reminder,
+memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
+the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
+credentials; the other endpoints can run without an LLM key.
+
+For a reminder whose missing time can be filled unambiguously from a retrieved
+`preferred_time` memory, the Agent uses a deterministic fast path and calls the
+reminder service without an LLM request. This behavior reduces latency and
+token cost while still reporting the retrieved and used memory.
+
 Run tests:
 
 ```powershell
 python -m pytest backend\tests -q
+```
+
+After configuring `.env`, run one real-model smoke test. It uses a temporary
+database and does not modify `backend/data/app.db`:
+
+```powershell
+python -m backend.tests.evaluation.run_live_model_smoke
+```
+
+Run the strict live evaluation for typos, ambiguous requests, corrections,
+prompt injection, medication safety, idempotency and memory overrides:
+
+```powershell
+python -m backend.tests.evaluation.run_live_stress_evaluation
+```
+
+Run the multi-turn high-difficulty evaluation where date, clock, recurrence
+and preference fields contain realistic input errors and corrections:
+
+```powershell
+python -m backend.tests.evaluation.run_live_dialogue_evaluation
 ```
 
 ## Frontend
@@ -89,10 +120,39 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 保持该终端运行，然后访问 API 文档：
 <http://127.0.0.1:8000/docs>
 
+后端会在应用启动时初始化一次 SQLite。提醒、记忆、反馈、指标和聊天接口见
+`API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
+凭据，其他接口不依赖大模型密钥即可运行。
+
+当提醒请求缺少的时间可以由检索到的 `preferred_time` 记忆唯一补全时，Agent
+会走确定性快速路径，直接调用提醒 Service，不产生大模型请求。响应仍会记录检索
+及实际使用的记忆，从而同时降低延迟和 Token 成本。
+
 运行后端测试：
 
 ```powershell
 python -m pytest backend\tests -q
+```
+
+配置 `.env` 后，可运行一次真实模型冒烟测试。该命令使用临时数据库，不会修改
+`backend/data/app.db`：
+
+```powershell
+python -m backend.tests.evaluation.run_live_model_smoke
+```
+
+运行包含错别字、模糊请求、前后修正、提示注入、用药安全、幂等和记忆覆盖的
+真实模型严苛评测：
+
+```powershell
+python -m backend.tests.evaluation.run_live_stress_evaluation
+```
+
+运行多轮高难度真实模型评测。该评测会在日期、钟点、周期和偏好等关键字段中
+加入合理的输入错误、逐步补充和前后修正：
+
+```powershell
+python -m backend.tests.evaluation.run_live_dialogue_evaluation
 ```
 
 ## 前端

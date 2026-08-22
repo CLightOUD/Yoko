@@ -26,7 +26,7 @@ class ReminderRepository(BaseRepository):
         title: str,
         next_trigger_at: datetime | str,
         timezone: str,
-        repeat_type: Literal["none", "daily"],
+        repeat_type: Literal["none", "daily", "weekly"],
         reminder_id: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
@@ -70,6 +70,66 @@ class ReminderRepository(BaseRepository):
                 (reminder_id, user_id),
             ).fetchone()
         return row_to_dict(row)
+
+    def list_active_for_schedule(
+        self,
+        *,
+        user_id: str,
+        next_trigger_at: datetime | str,
+        timezone: str,
+        repeat_type: Literal["none", "daily", "weekly"],
+        exclude_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        trigger_at = normalize_datetime(next_trigger_at)
+        parameters: list[Any] = [
+            user_id,
+            trigger_at,
+            timezone,
+            repeat_type,
+        ]
+        exclude_clause = ""
+        if exclude_id is not None:
+            exclude_clause = " AND id <> ?"
+            parameters.append(exclude_id)
+        with self._connection(connection) as active_connection:
+            rows = active_connection.execute(
+                f"""
+                SELECT * FROM reminders
+                WHERE user_id = ? AND next_trigger_at = ? AND timezone = ?
+                  AND repeat_type = ? AND status = 'active'{exclude_clause}
+                ORDER BY created_at ASC, id ASC
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_active_at_time(
+        self,
+        *,
+        user_id: str,
+        next_trigger_at: datetime | str,
+        timezone: str,
+        exclude_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        trigger_at = normalize_datetime(next_trigger_at)
+        parameters: list[Any] = [user_id, trigger_at, timezone]
+        exclude_clause = ""
+        if exclude_id is not None:
+            exclude_clause = " AND id <> ?"
+            parameters.append(exclude_id)
+        with self._connection(connection) as active_connection:
+            rows = active_connection.execute(
+                f"""
+                SELECT * FROM reminders
+                WHERE user_id = ? AND next_trigger_at = ? AND timezone = ?
+                  AND status = 'active'{exclude_clause}
+                ORDER BY created_at ASC, id ASC
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list(
         self,

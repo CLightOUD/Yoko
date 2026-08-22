@@ -283,3 +283,40 @@ class MemoryEventRepository(BaseRepository):
                 (memory_id, user_id),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_latest_by_source_message(
+        self,
+        *,
+        source_message_id: str,
+        user_id: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        with self._connection(connection) as active_connection:
+            row = active_connection.execute(
+                """
+                SELECT * FROM memory_events
+                WHERE source_message_id = ? AND user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (source_message_id, user_id),
+            ).fetchone()
+        return row_to_dict(row)
+
+    def list_by_source_message(
+        self,
+        *,
+        source_message_id: str,
+        user_id: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        with self._connection(connection) as active_connection:
+            rows = active_connection.execute(
+                """
+                SELECT * FROM memory_events
+                WHERE source_message_id = ? AND user_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (source_message_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]

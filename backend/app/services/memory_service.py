@@ -46,60 +46,98 @@ class MemoryService:
         display_text: str,
         reason: str,
         source_message_id: UUID | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> MemoryChange:
+        if connection is not None:
+            return self._upsert_in_connection(
+                connection=connection,
+                user_id=user_id,
+                scope=scope,
+                task_type=task_type,
+                memory_key=memory_key,
+                memory_value=memory_value,
+                display_text=display_text,
+                reason=reason,
+                source_message_id=source_message_id,
+            )
+        with self.database.transaction(immediate=True) as active_connection:
+            return self._upsert_in_connection(
+                connection=active_connection,
+                user_id=user_id,
+                scope=scope,
+                task_type=task_type,
+                memory_key=memory_key,
+                memory_value=memory_value,
+                display_text=display_text,
+                reason=reason,
+                source_message_id=source_message_id,
+            )
+
+    def _upsert_in_connection(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        user_id: str,
+        scope: MemoryScope,
+        task_type: TaskType,
+        memory_key: str,
+        memory_value: str,
+        display_text: str,
+        reason: str,
+        source_message_id: UUID | None,
     ) -> MemoryChange:
         if (scope == "global") != (task_type == "global"):
             raise InvalidRequestError("记忆 scope 与 task_type 不匹配")
         source_id = str(source_message_id) if source_message_id is not None else None
-        with self.database.transaction(immediate=True) as connection:
-            self._require_user(user_id, connection=connection)
-            self._require_source_message(
-                source_id, user_id=user_id, connection=connection
-            )
-            current = self.memories.find_latest_by_key(
+        self._require_user(user_id, connection=connection)
+        self._require_source_message(
+            source_id, user_id=user_id, connection=connection
+        )
+        current = self.memories.find_latest_by_key(
+            user_id=user_id,
+            task_type=task_type,
+            memory_key=memory_key,
+            connection=connection,
+        )
+        if current is None:
+            memory = self.memories.create(
                 user_id=user_id,
+                scope=scope,
                 task_type=task_type,
                 memory_key=memory_key,
-                connection=connection,
-            )
-            if current is None:
-                memory = self.memories.create(
-                    user_id=user_id,
-                    scope=scope,
-                    task_type=task_type,
-                    memory_key=memory_key,
-                    memory_value=memory_value,
-                    display_text=display_text,
-                    source_message_id=source_id,
-                    connection=connection,
-                )
-                action = "created"
-                before = None
-            else:
-                before = current
-                try:
-                    memory = self.memories.update(
-                        memory_id=current["id"],
-                        user_id=user_id,
-                        updates={
-                            "memory_value": memory_value,
-                            "display_text": display_text,
-                            "source_message_id": source_id,
-                            "active": True,
-                        },
-                        connection=connection,
-                    )
-                except sqlite3.IntegrityError as exc:
-                    raise ResourceConflictError("存在相同键的有效记忆") from exc
-                action = "updated"
-            self.events.create(
-                memory_id=memory["id"],
-                user_id=user_id,
-                action=action,
-                before_value=self._snapshot(before),
-                after_value=self._snapshot(memory),
+                memory_value=memory_value,
+                display_text=display_text,
                 source_message_id=source_id,
                 connection=connection,
             )
+            action = "created"
+            before = None
+        else:
+            before = current
+            try:
+                memory = self.memories.update(
+                    memory_id=current["id"],
+                    user_id=user_id,
+                    updates={
+                        "memory_value": memory_value,
+                        "display_text": display_text,
+                        "source_message_id": source_id,
+                        "active": True,
+                    },
+                    connection=connection,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ResourceConflictError("存在相同键的有效记忆") from exc
+            action = "updated"
+        self.events.create(
+            memory_id=memory["id"],
+            user_id=user_id,
+            action=action,
+            before_value=self._snapshot(before),
+            after_value=self._snapshot(memory),
+            source_message_id=source_id,
+            connection=connection,
+        )
         return MemoryChange(
             action=action,
             memory=self._to_view(memory),

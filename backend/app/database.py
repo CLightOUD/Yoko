@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     title TEXT NOT NULL,
     next_trigger_at TEXT NOT NULL,
     timezone TEXT NOT NULL,
-    repeat_type TEXT NOT NULL CHECK (repeat_type IN ('none', 'daily')),
+    repeat_type TEXT NOT NULL CHECK (repeat_type IN ('none', 'daily', 'weekly')),
     status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'deleted')),
     last_triggered_at TEXT,
     created_at TEXT NOT NULL,
@@ -159,6 +159,16 @@ class Database:
         now = utc_now_iso()
         with self.transaction() as connection:
             connection.executescript(SCHEMA_SQL)
+            self._migrate_reminders_for_weekly(connection)
+            self._consolidate_duplicate_reminders(connection, updated_at=now)
+            self._remove_covered_reminders(connection, updated_at=now)
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_reminders_active_schedule
+                ON reminders(user_id, next_trigger_at, timezone, repeat_type)
+                WHERE status = 'active'
+                """
+            )
             connection.execute(
                 """
                 INSERT INTO users (id, display_name, timezone, created_at, updated_at)
@@ -166,6 +176,155 @@ class Database:
                 ON CONFLICT(id) DO NOTHING
                 """,
                 ("demo-user", "用户", "Asia/Shanghai", now, now),
+            )
+
+    @staticmethod
+    def _migrate_reminders_for_weekly(connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reminders'"
+        ).fetchone()
+        if row is None or "'weekly'" in row["sql"]:
+            return
+
+        connection.execute("ALTER TABLE reminders RENAME TO reminders_legacy")
+        connection.execute(
+            """
+            CREATE TABLE reminders (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                title TEXT NOT NULL,
+                next_trigger_at TEXT NOT NULL,
+                timezone TEXT NOT NULL,
+                repeat_type TEXT NOT NULL CHECK (
+                    repeat_type IN ('none', 'daily', 'weekly')
+                ),
+                status TEXT NOT NULL CHECK (
+                    status IN ('active', 'completed', 'deleted')
+                ),
+                last_triggered_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO reminders (
+                id, user_id, title, next_trigger_at, timezone, repeat_type,
+                status, last_triggered_at, created_at, updated_at
+            )
+            SELECT
+                id, user_id, title, next_trigger_at, timezone, repeat_type,
+                status, last_triggered_at, created_at, updated_at
+            FROM reminders_legacy
+            """
+        )
+        connection.execute("DROP TABLE reminders_legacy")
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reminders_user_status_trigger
+            ON reminders(user_id, status, next_trigger_at, id)
+            """
+        )
+
+    @staticmethod
+    def _consolidate_duplicate_reminders(
+        connection: sqlite3.Connection,
+        *,
+        updated_at: str,
+    ) -> None:
+        groups = connection.execute(
+            """
+            SELECT user_id, next_trigger_at, timezone, repeat_type
+            FROM reminders
+            WHERE status = 'active'
+            GROUP BY user_id, next_trigger_at, timezone, repeat_type
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for group in groups:
+            rows = connection.execute(
+                """
+                SELECT id, title FROM reminders
+                WHERE user_id = ? AND next_trigger_at = ? AND timezone = ?
+                  AND repeat_type = ? AND status = 'active'
+                ORDER BY created_at ASC, id ASC
+                """,
+                tuple(group),
+            ).fetchall()
+            titles: list[str] = []
+            for reminder in rows:
+                for item in reminder["title"].split("；"):
+                    normalized = item.strip()
+                    if normalized and normalized not in titles:
+                        titles.append(normalized)
+            canonical_id = rows[0]["id"]
+            duplicate_ids = [row["id"] for row in rows[1:]]
+            connection.execute(
+                "UPDATE reminders SET title = ?, updated_at = ? WHERE id = ?",
+                ("；".join(titles), updated_at, canonical_id),
+            )
+            connection.executemany(
+                """
+                UPDATE reminders SET status = 'deleted', updated_at = ?
+                WHERE id = ?
+                """,
+                [(updated_at, reminder_id) for reminder_id in duplicate_ids],
+            )
+
+    @staticmethod
+    def _remove_covered_reminders(
+        connection: sqlite3.Connection,
+        *,
+        updated_at: str,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT id, user_id, title, next_trigger_at, timezone, repeat_type,
+                   created_at
+            FROM reminders
+            WHERE status = 'active'
+            ORDER BY created_at ASC, id ASC
+            """
+        ).fetchall()
+        groups: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
+        for reminder in rows:
+            normalized_title = "；".join(
+                " ".join(item.split()).casefold()
+                for item in reminder["title"].split("；")
+                if item.strip()
+            )
+            key = (
+                reminder["user_id"],
+                reminder["next_trigger_at"],
+                reminder["timezone"],
+                normalized_title,
+            )
+            groups.setdefault(key, []).append(reminder)
+
+        priority = {"none": 1, "weekly": 2, "daily": 3}
+        for reminders in groups.values():
+            repeat_types = {reminder["repeat_type"] for reminder in reminders}
+            if len(repeat_types) < 2:
+                continue
+            strongest = min(
+                reminders,
+                key=lambda reminder: (
+                    -priority[reminder["repeat_type"]],
+                    reminder["created_at"],
+                    reminder["id"],
+                ),
+            )
+            connection.executemany(
+                """
+                UPDATE reminders SET status = 'deleted', updated_at = ?
+                WHERE id = ?
+                """,
+                [
+                    (updated_at, reminder["id"])
+                    for reminder in reminders
+                    if reminder["id"] != strongest["id"]
+                ],
             )
 
     @contextmanager

@@ -12,3 +12,11 @@ class ResourceNotFoundError(ServiceError):
 
 class ResourceConflictError(ServiceError):
     pass
+
+
+class ModelUnavailableError(ServiceError):
+    pass
+
+
+class ToolExecutionError(ServiceError):
+    pass

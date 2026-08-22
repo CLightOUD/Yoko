@@ -265,7 +265,7 @@ MVP 是规则检索，不返回虚构的相似度分数。`used=false` 表示记
 枚举约束：
 
 ```text
-repeat_type: none | daily
+repeat_type: none | daily | weekly
 status: active | completed | deleted
 ```
 
@@ -273,10 +273,10 @@ status: active | completed | deleted
 | --- | --- | --- | --- |
 | `id` | UUID 字符串 | 否 | 提醒 ID |
 | `user_id` | 字符串 | 否 | 资源所属用户 |
-| `title` | 字符串 | 否 | 长度 1 至 200 |
+| `title` | 字符串 | 否 | 手动输入长度 1 至 200；合并后的响应最长 4000 |
 | `next_trigger_at` | ISO 8601 字符串 | 否 | 下一次触发时间 |
 | `timezone` | IANA 时区字符串 | 否 | 例如 `Asia/Shanghai` |
-| `repeat_type` | 枚举字符串 | 否 | `none` 或 `daily` |
+| `repeat_type` | 枚举字符串 | 否 | `none`、`daily` 或 `weekly` |
 | `status` | 枚举字符串 | 否 | `active`、`completed` 或 `deleted` |
 | `last_triggered_at` | ISO 8601 字符串 | 是 | 最近一次已确认的计划触发时间；从未确认时为 `null` |
 | `created_at` | ISO 8601 字符串 | 否 | 创建时间 |
@@ -440,6 +440,14 @@ metrics: RequestMetrics
 
 用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。此时 `/api/chat` 仍正常处理该消息，并通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务返回空数组。
 
+当提醒请求已经包含明确日期，仅缺少钟点，且检索到的 `preferred_time` 记忆能够唯一补全该参数时，Agent 可以走确定性记忆快速路径，直接调用 `ReminderService`。此时仍应返回 `used=true` 和成功的 `tool_calls`，但由于没有调用大模型，`model_call_count=0`、`input_tokens=null`、`output_tokens=null`、`memory_tokens=0`。其他开放式任务继续通过 LangChain Agent 处理。
+
+当消息明确要求提醒，但只给出“上午”“下午”“晚上”“过会儿”等时间范围，或完全没有钟点，并且没有可用的 `preferred_time` 记忆时，Agent 必须直接返回 `needs_clarification`，不得让模型猜测默认钟点或调用工具。该确定性门禁同样可以减少不必要的模型请求。
+
+多轮对话中，如果上一轮正在追问提醒钟点，下一轮只补充“下礼拜二上午”等片段，仍应继承提醒语境并继续追问具体钟点。用户询问、复述或确认刚创建的提醒时，只返回现有提醒信息，不得再次调用创建工具。复述日期应同时包含公历日期、星期和钟点，便于老年用户核对。
+
+对高频且无歧义的输入错误可在规则层保守归一化，例如“晚丄→晚上”“7典→7点”“提酲→提醒”。归一化必须发生在任务分类和偏好提取之前；不得把药名、剂量或医疗事项按猜测改写。若本轮已经明确给出钟点，`preferred_time` 不得标记为已使用，也不得被本次值覆盖。
+
 `status` 枚举：
 
 ```text
@@ -512,6 +520,9 @@ completed | needs_clarification | partial
 
 `feedback_text`、`corrected_reply` 和 `rating` 至少提供一项，否则 Pydantic 校验返回 `422 INVALID_REQUEST`。
 - 只有明确的长期表达才自动写入记忆；临时状态、推测偏好和未确认医疗信息必须跳过。
+- 同一反馈同时包含临时描述和“以后”等长期表达时，只从长期语句片段提取偏好，不能被前面的临时时间干扰。
+- 反馈按逗号、句号、分号和常见连接词拆分长期语句；一条反馈可以写入多个不同 `task_type + memory_key` 的偏好。
+- 包含“不要”“不再”或“别”等否定表达的子句暂不自动写入记忆，但不影响同一反馈中其他明确的长期偏好。
 - 同一反馈被重复提交时不得产生重复有效记忆。
 
 成功响应：`200 OK`，模型为 `FeedbackResponse`：
@@ -549,10 +560,10 @@ metrics: FeedbackMetrics
     }
   ],
   "metrics": {
-    "model_call_count": 1,
-    "input_tokens": 180,
-    "output_tokens": 42,
-    "total_ms": 510
+    "model_call_count": 0,
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_ms": 3
   }
 }
 ```
@@ -604,9 +615,18 @@ Path 参数：无。Query 参数：无。请求体数据模型（Pydantic）：`
 | `title` | 字符串 | 是 | 无 | 去除首尾空格后长度为 1 至 200 |
 | `next_trigger_at` | ISO 8601 字符串 | 是 | 无 | 必须包含时区且晚于当前时间 |
 | `timezone` | IANA 时区字符串 | 否 | `Asia/Shanghai` | 必须与用户期望时区一致 |
-| `repeat_type` | 枚举字符串 | 否 | `none` | `none` 或 `daily` |
+| `repeat_type` | 枚举字符串 | 否 | `none` | `none`、`daily` 或 `weekly` |
 
 成功响应：`201 Created`，模型为 `ReminderView`，字段格式与 5.3 节完全一致。
+
+活动提醒按 `user_id + next_trigger_at + timezone + repeat_type` 保证唯一：
+
+- 相同日程和相同内容被重复创建时，返回原提醒，`id` 和 `created_at` 不变。
+- 高置信度同义内容按同一事项处理，例如“吃降压药”与“服用降压药”、“去遛弯”与“散步”；不使用模型猜测药品或医疗事项是否等价。
+- 相同日程但内容不同且周期规则相同时，将标题用中文分号合并到原提醒中，不新建第二条活动提醒。
+- 相同日程和相同内容但周期规则不同时，按 `daily > weekly > none` 保留覆盖范围更大的提醒；弱周期提醒不会重复触发。
+- 相同日程但内容和周期规则都不同时保持独立，避免把一次性内容错误地变成每日或每周事项。
+- `completed` 或 `deleted` 提醒不参与创建去重。
 
 过去时间、无效时区或无效枚举均由 Pydantic 校验返回 `422 INVALID_REQUEST`。
 
@@ -688,12 +708,12 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 | `title` | 字符串 | 否 | 省略 | 提供时长度为 1 至 200；不可为 `null` |
 | `next_trigger_at` | ISO 8601 字符串 | 否 | 省略 | 提供时必须包含时区且晚于当前时间；不可为 `null` |
 | `timezone` | IANA 时区字符串 | 否 | 省略 | 提供时必须有效；不可为 `null` |
-| `repeat_type` | 枚举字符串 | 否 | 省略 | `none` 或 `daily`；不可为 `null` |
+| `repeat_type` | 枚举字符串 | 否 | 省略 | `none`、`daily` 或 `weekly`；不可为 `null` |
 | `status` | 枚举字符串 | 否 | 省略 | 仅允许 `active` 或 `completed`；删除使用 DELETE |
 
 除 `user_id` 外至少提供一个修改字段。JSON 中显式传入 `null` 不表示清空，应按无效参数返回 `422`；未修改字段应直接省略。
 
-成功响应：`200 OK`，模型为更新后的 `ReminderView`。资源不存在或不属于该用户时返回 `404 RESOURCE_NOT_FOUND`。
+成功响应：`200 OK`，模型为更新后的 `ReminderView`。资源不存在或不属于该用户时返回 `404 RESOURCE_NOT_FOUND`。若修改后的日程和内容已被更强周期的提醒覆盖，当前弱提醒会被软删除，响应返回实际存活的提醒，因此响应中的 `id` 可能与 Path 参数不同，调用方应以响应 `id` 为准。
 
 ### 9.5 删除提醒
 
@@ -738,10 +758,14 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 - 否则 `expected_trigger_at` 必须等于当前 `next_trigger_at`，不相等时返回 `409 RESOURCE_CONFLICT`。
 - 一次性提醒：将 `last_triggered_at` 设置为 `expected_trigger_at`，并将状态改为 `completed`。
 - 每日提醒：将 `last_triggered_at` 设置为 `expected_trigger_at`，并将 `next_trigger_at` 推进到下一天。
+- 每周提醒：将 `last_triggered_at` 设置为 `expected_trigger_at`，并将 `next_trigger_at` 推进到下一周同一天。
+- 如果用户延迟确认周期提醒，应继续按本地自然日期推进，直到 `next_trigger_at` 晚于服务端当前时间，不能让确认后的提醒仍处于到期状态。
+- 周期推进后的落点必须重新执行同周期内容合并和 `daily > weekly > none` 覆盖规则，避免唯一索引冲突或同一时刻重复提醒。
+- 如果周期提醒在推进落点已被更强周期的同内容提醒覆盖，将当前弱提醒标记为 `completed`；更强提醒继续保持活动，重复确认仍返回同一弱提醒的幂等结果。
 - 重复提交相同确认不得再次推进日期。
 - 提醒已被其他请求修改：返回 `409 RESOURCE_CONFLICT`。
 
-每日提醒必须按 `timezone` 的下一个本地自然日计算相同钟点，不能简单增加 24 小时，否则夏令时地区会产生偏移。
+每日和每周提醒必须按 `timezone` 的本地自然日期计算相同钟点，不能简单增加固定小时数，否则夏令时地区会产生偏移。
 
 成功响应：`200 OK`，模型为 `ReminderAckResponse`。
 
@@ -1018,6 +1042,9 @@ metrics.py
 | 用户撤销记忆 | PATCH 停用或 DELETE 软删除 | 是 |
 | 一次性提醒 | `repeat_type=none` | 是 |
 | 每日提醒 | `repeat_type=daily` | 是 |
+| 每周提醒 | `repeat_type=weekly`，确认后推进 7 个本地自然日 | 是 |
+| 重复创建相同提醒 | 返回原提醒，不产生新 ID | 是 |
+| 同时刻的不同提醒内容 | 周期规则相同时合并到一条提醒 | 是 |
 | 到期提醒轮询 | `/api/reminders/due` | 是 |
 | 重复轮询 | 前端按 `id + next_trigger_at` 去重 | 是 |
 | 重复确认 | `expected_trigger_at` 防止日期重复推进 | 是 |
@@ -1058,7 +1085,7 @@ metrics.py
 - Agent 只有一个同步入口，不引入任务队列或流式协议。
 - 反馈独立建模，可以可靠关联原请求并展示记忆变化。
 - 记忆使用过程可见，能够验证“检索到”和“实际使用”的区别。
-- 提醒只支持一次性和每日重复，不引入通用调度系统。
+- 提醒支持一次性、每日和每周重复，不引入通用 Cron 调度系统。
 - 幂等删除和带期望时间的确认可以处理前端重复点击与轮询。
 - 指标直接对应记忆成本、对话速度和记忆效果三个考查点。
 
