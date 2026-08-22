@@ -65,10 +65,19 @@ function App() {
       </header>
 
       <main className="app-main">
-        {tab === 'chat' && <ChatPage />}
-        {tab === 'reminders' && <RemindersPage />}
-        {tab === 'memories' && <MemoriesPage />}
-        {tab === 'metrics' && <MetricsPage />}
+        {/* 保持所有页面挂载，仅用 display 控制显隐，避免切换 Tab 丢失状态 */}
+        <div style={{ display: tab === 'chat' ? undefined : 'none' }}>
+          <ChatPage />
+        </div>
+        <div style={{ display: tab === 'reminders' ? undefined : 'none' }}>
+          <RemindersPage />
+        </div>
+        <div style={{ display: tab === 'memories' ? undefined : 'none' }}>
+          <MemoriesPage />
+        </div>
+        <div style={{ display: tab === 'metrics' ? undefined : 'none' }}>
+          <MetricsPage />
+        </div>
       </main>
 
       <nav className="app-nav" aria-label="主导航">
