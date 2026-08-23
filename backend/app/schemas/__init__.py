@@ -1,3 +1,10 @@
+from backend.app.schemas.auth import (
+    AuthResponse,
+    LoginRequest,
+    LogoutResponse,
+    RegisterRequest,
+    UserView,
+)
 from backend.app.schemas.chat import (
     ChatRequest,
     ChatResponse,
@@ -37,6 +44,7 @@ from backend.app.schemas.reminder import (
 )
 
 __all__ = [
+    "AuthResponse",
     "ChatRequest",
     "ChatResponse",
     "DeleteResponse",
@@ -47,6 +55,8 @@ __all__ = [
     "FeedbackRequest",
     "FeedbackResponse",
     "HealthResponse",
+    "LoginRequest",
+    "LogoutResponse",
     "ReadinessResponse",
     "MemoryChange",
     "MemoryListQuery",
@@ -62,7 +72,9 @@ __all__ = [
     "ReminderListResponse",
     "ReminderUpdateRequest",
     "ReminderView",
+    "RegisterRequest",
     "RequestMetrics",
     "RetrievedMemory",
     "ToolCallView",
+    "UserView",
 ]

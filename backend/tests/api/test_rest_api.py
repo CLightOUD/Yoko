@@ -11,6 +11,10 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
     expected_operations = {
         ("get", "/api/health"),
         ("get", "/api/ready"),
+        ("post", "/api/auth/register"),
+        ("post", "/api/auth/login"),
+        ("get", "/api/auth/me"),
+        ("post", "/api/auth/logout"),
         ("post", "/api/chat"),
         ("post", "/api/feedback"),
         ("post", "/api/reminders"),

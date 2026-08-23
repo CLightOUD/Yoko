@@ -1,6 +1,7 @@
 from fastapi import Request
 
 from backend.app.database import Database
+from backend.app.services.auth_service import AuthService
 from backend.app.services import MemoryService, MetricsService, ReminderService
 from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
@@ -8,6 +9,10 @@ from backend.app.services.feedback_service import FeedbackService
 
 def get_database(request: Request) -> Database:
     return request.app.state.database
+
+
+def get_auth_service(request: Request) -> AuthService:
+    return request.app.state.auth_service
 
 
 def get_reminder_service(request: Request) -> ReminderService:

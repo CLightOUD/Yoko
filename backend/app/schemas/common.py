@@ -19,9 +19,14 @@ class APIModel(BaseModel):
 
 UserId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 ErrorCode = Literal[
+    "AUTHENTICATION_REQUIRED",
+    "AUTHENTICATION_UNAVAILABLE",
+    "INVALID_CREDENTIALS",
     "INVALID_REQUEST",
     "RESOURCE_NOT_FOUND",
     "RESOURCE_CONFLICT",
+    "TOO_MANY_ATTEMPTS",
+    "USERNAME_ALREADY_EXISTS",
     "MODEL_UNAVAILABLE",
     "TOOL_EXECUTION_FAILED",
     "DATABASE_UNAVAILABLE",

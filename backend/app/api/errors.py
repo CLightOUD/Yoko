@@ -11,13 +11,18 @@ from fastapi.responses import JSONResponse
 from backend.app.schemas import ErrorDetail, ErrorResponse
 from backend.app.schemas.common import ErrorCode
 from backend.app.services import (
+    AuthenticationRequiredError,
+    AuthenticationUnavailableError,
     DatabaseUnavailableError,
+    InvalidCredentialsError,
     InvalidRequestError,
     ModelUnavailableError,
     ResourceConflictError,
     ResourceNotFoundError,
     ServiceError,
     ToolExecutionError,
+    TooManyAttemptsError,
+    UsernameAlreadyExistsError,
 )
 
 
@@ -25,10 +30,12 @@ logger = logging.getLogger("yoko.errors")
 
 
 ERROR_DESCRIPTIONS = {
+    401: "需要登录或登录凭据无效",
     400: "业务参数无效",
     404: "资源不存在",
     409: "资源状态冲突",
     422: "请求字段校验失败",
+    429: "请求过于频繁",
     500: "服务器内部错误",
     502: "模型或工具不可用",
     503: "服务暂不可用",
@@ -94,11 +101,16 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ServiceError)
     def handle_service_error(request: Request, exc: ServiceError) -> JSONResponse:
         mapping: dict[type[ServiceError], tuple[int, str]] = {
+            AuthenticationRequiredError: (401, "AUTHENTICATION_REQUIRED"),
+            AuthenticationUnavailableError: (503, "AUTHENTICATION_UNAVAILABLE"),
+            InvalidCredentialsError: (401, "INVALID_CREDENTIALS"),
             InvalidRequestError: (400, "INVALID_REQUEST"),
             ResourceNotFoundError: (404, "RESOURCE_NOT_FOUND"),
             ResourceConflictError: (409, "RESOURCE_CONFLICT"),
             ModelUnavailableError: (502, "MODEL_UNAVAILABLE"),
             ToolExecutionError: (502, "TOOL_EXECUTION_FAILED"),
+            TooManyAttemptsError: (429, "TOO_MANY_ATTEMPTS"),
+            UsernameAlreadyExistsError: (409, "USERNAME_ALREADY_EXISTS"),
             DatabaseUnavailableError: (503, "DATABASE_UNAVAILABLE"),
         }
         status_code, code = mapping.get(type(exc), (500, "INTERNAL_ERROR"))
@@ -112,9 +124,14 @@ def install_error_handlers(app: FastAPI) -> None:
             },
         )
         safe_messages = {
+            AuthenticationRequiredError: "请先登录",
+            AuthenticationUnavailableError: "认证服务尚未完成接入",
+            InvalidCredentialsError: "用户名或密码错误",
             ModelUnavailableError: "模型服务暂不可用，请稍后重试",
             ToolExecutionError: "外部工具暂不可用，请稍后重试",
             DatabaseUnavailableError: "数据库暂不可用",
+            TooManyAttemptsError: "登录失败次数过多，请稍后再试",
+            UsernameAlreadyExistsError: "用户名已存在",
         }
         return error_response(
             request,

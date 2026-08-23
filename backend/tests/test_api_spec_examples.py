@@ -20,6 +20,14 @@ def models_for_example(data: dict[str, Any]) -> tuple[type[BaseModel], ...]:
 
     if "error" in keys:
         return (schemas.ErrorResponse,)
+    if keys == {"username", "password", "display_name", "timezone"}:
+        return (schemas.RegisterRequest,)
+    if keys == {"username", "password"}:
+        return (schemas.LoginRequest,)
+    if keys == {"user", "session_expires_at"}:
+        return (schemas.AuthResponse,)
+    if keys == {"logged_out"}:
+        return (schemas.LogoutResponse,)
     if keys == {"status"}:
         return (schemas.HealthResponse,)
     if keys == {"id", "deleted"}:
@@ -62,7 +70,7 @@ def test_all_api_spec_json_examples_match_pydantic_models() -> None:
     content = API_SPEC_PATH.read_text(encoding="utf-8")
     blocks = JSON_BLOCK_PATTERN.findall(content)
 
-    assert len(blocks) == 23
+    assert len(blocks) == 27
 
     for block in blocks:
         data = json.loads(block)

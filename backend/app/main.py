@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.agent import AgentRuntime, LangChainAgent
+from backend.app.api.auth import router as auth_router
 from backend.app.api.chat import router as chat_router
 from backend.app.api.errors import install_error_handlers
 from backend.app.api.feedback import router as feedback_router
@@ -22,6 +23,7 @@ from backend.app.api.reminders import router as reminders_router
 from backend.app.database import Database
 from backend.app.logging_config import configure_logging
 from backend.app.services import MemoryService, MetricsService, ReminderService
+from backend.app.services.auth_service import AuthService
 from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
 
@@ -33,6 +35,7 @@ def create_app(
     *,
     database: Database | None = None,
     agent: AgentRuntime | None = None,
+    auth_service: AuthService | None = None,
 ) -> FastAPI:
     configure_logging()
 
@@ -40,6 +43,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         active_database = database or Database()
         active_database.initialize()
+        active_auth_service = auth_service or AuthService(active_database)
         reminder_service = ReminderService(active_database)
         memory_service = MemoryService(active_database)
         metrics_service = MetricsService(active_database)
@@ -52,6 +56,7 @@ def create_app(
             agent=agent or LangChainAgent(),
         )
         app.state.database = active_database
+        app.state.auth_service = active_auth_service
         app.state.reminder_service = reminder_service
         app.state.memory_service = memory_service
         app.state.metrics_service = metrics_service
@@ -59,7 +64,7 @@ def create_app(
         app.state.chat_service = chat_service
         yield
 
-    application = FastAPI(title="Yoko API", version="0.2.0", lifespan=lifespan)
+    application = FastAPI(title="Yoko API", version="0.3.0", lifespan=lifespan)
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
     application.add_middleware(
         CORSMiddleware,
@@ -95,6 +100,7 @@ def create_app(
 
     install_error_handlers(application)
     application.include_router(health_router)
+    application.include_router(auth_router)
     application.include_router(chat_router)
     application.include_router(feedback_router)
     application.include_router(reminders_router)

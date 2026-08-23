@@ -1,12 +1,12 @@
 # Yoko API 接口规范
 
-- 版本：`0.2.0`
-- 状态：MVP 开发合同
+- 版本：`0.3.0`
+- 状态：账号系统阶段一合同；认证路由为显式 `503` 骨架
 适用范围：适老陪伴、提醒、反馈记忆与效果评估
 
 ## 快速导航
 
-- 全员先读：第 3 节通用约定、第 4 节接口总览、第 5 节公共对象。
+- 全员先读：第 3 节通用约定、第 4 节接口总览、第 5.9 节认证合同。
 - 队长（Agent/API）：重点阅读第 6 至 8 节、第 12 节和第 13.1 至 13.2 节。
 - 队员 A（数据/记忆/提醒）：重点阅读第 8 至 11 节和第 13.3 节。
 - 队员 B（前端）：重点阅读第 3.4、3.6、4 至 11 节和第 13.4 节。
@@ -32,12 +32,15 @@ MVP 需要同时满足：
 - 支持前端轮询、确认提醒和防止重复确认。
 - 支持用户查看、修改、停用和删除记忆。
 - 返回记忆使用情况、Token 数和各阶段耗时。
+- 支持用户名密码注册、登录、退出和固定 180 天 Session。
+- 所有业务数据最终由服务端 Session 确定用户归属。
 
 ## 2. MVP 边界
 
 本阶段不实现：
 
-- 登录、注册和多角色权限系统。
+- 验证码、密码找回、修改密码和第三方登录。
+- 管理员、家庭成员等多角色权限。
 - WebSocket、SSE 流式输出。
 - 向量数据库和相似度搜索。
 - 通用 Cron 表达式。
@@ -46,6 +49,8 @@ MVP 需要同时满足：
 - 历史会话列表、跨设备会话恢复。
 
 MVP 使用前端每 20 至 30 秒轮询到期提醒。网页关闭后不能保证提醒触发，演示时必须明确说明。
+
+阶段一只冻结认证合同并注册路由骨架。`POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me` 和 `POST /api/auth/logout` 当前统一返回 `503 AUTHENTICATION_UNAVAILABLE`，不创建用户、不签发 Cookie，也不伪造成功响应。队员 A 实现 V3 迁移和 `AuthService` 后，再由队长启用真实认证并保护现有业务接口。
 
 ## 3. 通用约定
 
@@ -95,9 +100,11 @@ API prefix: /api
 | `200` | 查询、修改、删除或 Agent 请求成功 |
 | `201` | 手动创建提醒成功 |
 | `400` | 已通过字段校验，但仍无法执行业务的参数错误 |
+| `401` | 未登录、Session 失效或用户名密码错误 |
 | `404` | 会话、提醒、记忆或请求不存在 |
 | `409` | 提醒已被修改、确认时间已失效或资源状态冲突 |
 | `422` | Pydantic 字段校验失败 |
+| `429` | 登录失败次数过多，需要暂时等待 |
 | `502` | 模型或工具故障导致无法形成有效业务响应 |
 | `503` | 数据库或必要运行依赖尚未就绪 |
 | `500` | 未处理的服务端错误 |
@@ -118,9 +125,14 @@ API prefix: /api
 建议错误码：
 
 ```text
+AUTHENTICATION_REQUIRED
+AUTHENTICATION_UNAVAILABLE
+INVALID_CREDENTIALS
 INVALID_REQUEST
 RESOURCE_NOT_FOUND
 RESOURCE_CONFLICT
+TOO_MANY_ATTEMPTS
+USERNAME_ALREADY_EXISTS
 MODEL_UNAVAILABLE
 TOOL_EXECUTION_FAILED
 DATABASE_UNAVAILABLE
@@ -138,11 +150,16 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `error.details` | JSON 对象、数组、字符串或 `null` | 是 | 字段错误等调试信息 |
 | `request_id` | UUID 字符串 | 否 | 由请求中间件生成，用于日志关联 |
 
-### 3.5 MVP 用户约定
+### 3.5 用户与认证约定
 
-- 数据库初始化时必须创建 `demo-user`，默认显示名称和时区分别为“用户”和 `Asia/Shanghai`。
-- 前端 MVP 固定使用 `demo-user`；自动化测试可以预置其他用户验证数据隔离。
-- 本版本没有创建用户接口。未知 `user_id` 返回 `404 RESOURCE_NOT_FOUND`，不能由查询接口隐式创建用户。
+- 阶段一仍保留旧 `demo-user` 和现有业务请求中的 `user_id`，仅用于保持当前前后端可运行；这不是云端安全边界。
+- 账号功能完成后，注册是生产环境创建用户的唯一公开入口，查询和业务接口不得按任意 `user_id` 隐式创建用户。
+- 账号功能完成后，聊天、反馈、提醒、记忆和指标接口全部从服务端 Session 取得用户 ID，HTTP 请求不再信任客户端 `user_id`。
+- 未登录访问受保护接口返回 `401 AUTHENTICATION_REQUIRED`。
+- Session 固定有效 180 天，普通业务请求不滑动续期；重新登录签发新的独立 Session。
+- 同一账号允许多个设备分别登录；退出只撤销当前 Session。
+- 原始 Session Token 只存于 `HttpOnly` Cookie，数据库只保存其 SHA-256 哈希。
+- 密码只保存 Argon2id 哈希，不保存或记录明文。
 - `ChatRequest.timezone` 只影响本次自然语言时间解析，不自动修改用户资料。
 
 ### 3.6 接口错误矩阵
@@ -153,6 +170,10 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | --- | --- |
 | `GET /api/health` | 通常无业务错误 |
 | `GET /api/ready` | `503 DATABASE_UNAVAILABLE` |
+| `POST /api/auth/register` | `409 USERNAME_ALREADY_EXISTS`、`422 INVALID_REQUEST`、`429 TOO_MANY_ATTEMPTS`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
+| `POST /api/auth/login` | `401 INVALID_CREDENTIALS`、`422 INVALID_REQUEST`、`429 TOO_MANY_ATTEMPTS`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
+| `GET /api/auth/me` | `401 AUTHENTICATION_REQUIRED`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
+| `POST /api/auth/logout` | 阶段一 `503 AUTHENTICATION_UNAVAILABLE`；真实服务接入后幂等成功 |
 | `POST /api/chat` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
 | `POST /api/feedback` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -174,6 +195,10 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/health` | 无 | `200` | `HealthResponse` |
 | `GET` | `/api/ready` | 无 | `200` | `ReadinessResponse` |
+| `POST` | `/api/auth/register` | Body: `RegisterRequest` | `201` | `AuthResponse` |
+| `POST` | `/api/auth/login` | Body: `LoginRequest` | `200` | `AuthResponse` |
+| `GET` | `/api/auth/me` | Cookie: Session | `200` | `AuthResponse` |
+| `POST` | `/api/auth/logout` | Cookie: 可选 Session | `200` | `LogoutResponse` |
 | `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequest` | `200` | `ChatResponse` |
 | `POST` | `/api/feedback` | Body: `FeedbackRequest` | `200` | `FeedbackResponse` |
 | `POST` | `/api/reminders` | Body: `ReminderCreateRequest` | `201` | `ReminderView` |
@@ -346,6 +371,210 @@ status: active | completed | deleted
 ```
 
 两个字段都必填且不可空。删除使用软删除，成功和重复删除都返回 `deleted=true`，不返回 `204 No Content`。
+
+### 5.9 账号与 Session 对象
+
+#### RegisterRequest
+
+```json
+{
+  "username": "alice_01",
+  "password": "correct-horse-2026",
+  "display_name": "李阿姨",
+  "timezone": "Asia/Shanghai"
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 规则 |
+| --- | --- | --- | --- | --- |
+| `username` | 字符串 | 是 | 无 | 去除首尾空格后 3～32 位，只允许 ASCII 字母、数字和下划线 |
+| `password` | 字符串 | 是 | 无 | 8～128 个字符，Pydantic 使用 `SecretStr`，不得回显或进入日志 |
+| `display_name` | 字符串 | 是 | 无 | 去除首尾空格后 1～32 个字符，可使用中文 |
+| `timezone` | IANA 时区字符串 | 否 | `Asia/Shanghai` | 必须可由 `zoneinfo.ZoneInfo` 解析 |
+
+用户名唯一性使用 `username_normalized = username.strip().casefold()` 判断。服务端保留用户输入的展示用户名，同时以规范化值建立唯一索引。
+
+#### LoginRequest
+
+```json
+{
+  "username": "alice_01",
+  "password": "correct-horse-2026"
+}
+```
+
+字段规则与 `RegisterRequest` 相同。用户名不存在和密码错误统一返回 `401 INVALID_CREDENTIALS`，消息统一为“用户名或密码错误”，不得泄露账号是否存在。
+
+#### UserView 与 AuthResponse
+
+`UserView` 不包含密码哈希、失败次数、锁定时间或 Session Token：
+
+```text
+id: UUID
+username: string
+display_name: string
+timezone: IANA timezone string
+```
+
+注册、登录和当前用户接口共用 `AuthResponse`：
+
+```json
+{
+  "user": {
+    "id": "64e7398e-811a-4b2c-b301-e46ad4d180ba",
+    "username": "alice_01",
+    "display_name": "李阿姨",
+    "timezone": "Asia/Shanghai"
+  },
+  "session_expires_at": "2027-02-19T08:00:00Z"
+}
+```
+
+`session_expires_at` 必须包含时区。原始 Session Token 只通过 `Set-Cookie` 返回，不进入 JSON。
+
+#### LogoutResponse
+
+```json
+{
+  "logged_out": true
+}
+```
+
+退出必须幂等：有效 Session 立即撤销；Cookie 缺失、无效、已过期或已撤销时仍返回 `200` 和相同响应，同时删除浏览器 Cookie。
+
+#### 认证接口
+
+##### `POST /api/auth/register`
+
+- 输入：`RegisterRequest`。
+- 成功：`201 AuthResponse`，同时签发 Session Cookie。
+- 用户名已存在：`409 USERNAME_ALREADY_EXISTS`。
+- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`，不写数据库、不设置 Cookie。
+
+##### `POST /api/auth/login`
+
+- 输入：`LoginRequest`。
+- 成功：`200 AuthResponse`，同时签发新的独立 Session Cookie。
+- 凭据错误：`401 INVALID_CREDENTIALS`。
+- 同一规范化用户名连续失败 5 次后暂停登录 15 分钟，返回 `429 TOO_MANY_ATTEMPTS`；成功登录清零失败状态。
+- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`，不设置 Cookie。
+
+##### `GET /api/auth/me`
+
+- 输入：Session Cookie。
+- 成功：`200 AuthResponse`。
+- Cookie 缺失、Session 不存在、过期或撤销：`401 AUTHENTICATION_REQUIRED`。
+- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`。
+
+##### `POST /api/auth/logout`
+
+- 输入：可选 Session Cookie，无 JSON Body。
+- 成功：`200 LogoutResponse`，撤销当前 Session 并删除 Cookie。
+- 不因 Cookie 缺失或 Session 已失效返回 `401`。
+- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`。
+
+#### Session Cookie
+
+```text
+本地开发名称：yoko_session
+生产环境名称：__Host-yoko_session
+HttpOnly=true
+SameSite=Lax
+Path=/
+Max-Age=15552000
+Secure=false（仅本地 HTTP）
+Secure=true（生产 HTTPS）
+Domain 不设置
+```
+
+`15552000` 秒等于 180 天。若 Cookie 名以 `__Host-` 开头，必须同时满足 `Secure=true`、`Path=/` 和不设置 `Domain`。
+
+#### 阶段二内部 Service 合同
+
+`backend/app/services/auth_service.py` 的公开方法签名冻结为：
+
+```python
+AuthService(database: Database)
+
+register(request: RegisterRequest) -> IssuedSession
+login(request: LoginRequest) -> IssuedSession
+resolve_session(session_token: str | None) -> AuthResponse
+logout(session_token: str | None) -> None
+
+IssuedSession
+  token: str
+  response: AuthResponse
+```
+
+`IssuedSession.token` 是只供路由设置 Cookie 的原始值，不得进入 Pydantic 响应、日志、异常消息或数据库。`AuthService` 的多表写操作必须使用数据库事务。
+
+#### 阶段二内部 Repository 合同
+
+队员 A 按以下语义实现，参数可以保持关键字参数和可选 `connection` 的现有风格：
+
+```python
+UserRepository.create_account(
+    *, user_id, username, username_normalized, password_hash,
+    display_name, timezone, connection=None
+) -> dict
+
+UserRepository.get_by_normalized_username(
+    username_normalized, *, connection=None
+) -> dict | None
+
+UserRepository.update_login_state(
+    user_id, *, failed_login_count, login_blocked_until,
+    last_login_at=None, connection=None
+) -> dict
+
+AuthSessionRepository.create(
+    *, session_id, user_id, token_hash, created_at, expires_at,
+    connection=None
+) -> dict
+
+AuthSessionRepository.get_active_by_token_hash(
+    token_hash, *, now, connection=None
+) -> dict | None
+
+AuthSessionRepository.revoke_by_token_hash(
+    token_hash, *, revoked_at, connection=None
+) -> bool
+
+AuthSessionRepository.delete_expired(
+    *, now, connection=None
+) -> int
+```
+
+Repository 只接收 Session Token 哈希，不接收或保存原始 Token。`get_active_by_token_hash` 只返回未撤销且 `expires_at > now` 的记录。
+
+#### V3 数据合同
+
+扩展 `users`：
+
+```text
+username TEXT NULL
+username_normalized TEXT NULL
+password_hash TEXT NULL
+disabled INTEGER NOT NULL DEFAULT 0
+last_login_at TEXT NULL
+failed_login_count INTEGER NOT NULL DEFAULT 0
+login_blocked_until TEXT NULL
+```
+
+旧 `demo-user` 的账号字段保持 `NULL`，因此不能通过固定公开密码登录。对 `username_normalized IS NOT NULL` 建立唯一索引。
+
+新增 `auth_sessions`：
+
+```text
+id TEXT PRIMARY KEY
+user_id TEXT NOT NULL REFERENCES users(id)
+token_hash TEXT UNIQUE NOT NULL
+created_at TEXT NOT NULL
+expires_at TEXT NOT NULL
+revoked_at TEXT NULL
+```
+
+建立 `(user_id, expires_at)` 和 `(expires_at, revoked_at)` 索引。V3 迁移不得删除或改变现有消息、提醒、记忆、反馈和指标归属。
 
 ## 6. 健康检查
 
@@ -976,6 +1205,13 @@ common.py
   ReadinessResponse
   DeleteResponse
 
+auth.py
+  RegisterRequest
+  LoginRequest
+  UserView
+  AuthResponse
+  LogoutResponse
+
 chat.py
   ChatRequest
   ChatResponse
@@ -1027,6 +1263,8 @@ metrics.py
 - 所有路由必须声明 `response_model`，不得直接返回未经约束的字典。
 - 资源不存在和资源属于其他用户都返回 `404`，避免泄露其他用户数据。
 - 不在路由函数中直接写 SQL，也不在路由中拼接模型 Prompt。
+- 认证路由只通过 `AuthService` 读写账号和 Session；原始 Token 只用于设置或读取 Cookie。
+- 阶段一认证骨架必须明确返回 `503 AUTHENTICATION_UNAVAILABLE`，不得返回 Mock 用户或假 Cookie。
 
 ### 13.2 Agent 层
 
@@ -1047,6 +1285,8 @@ metrics.py
 - Chat 收尾阶段的记忆使用、偏好更新、助手消息、指标和最终响应必须在同一事务中完成。
 - 反馈记录、记忆修改与 `memory_events` 应在同一事务中完成。
 - 提醒确认时比较 `expected_trigger_at`，读取、校验和更新应在同一事务中完成。
+- `AuthService` 负责用户名规范化、Argon2id 密码验证、登录失败限制、Session 签发、解析和撤销。
+- `AuthSessionRepository` 只保存随机 Session Token 的 SHA-256 哈希；原始 Token 不得离开 API 进程内存。
 
 ### 13.4 前端
 
@@ -1055,12 +1295,23 @@ metrics.py
 - 请求进行中禁用重复提交按钮；到期提醒按 `id + next_trigger_at` 去重。
 - 遇到非 `2xx` 响应时统一读取 `ErrorResponse`。
 - 页面显示 `retrieved_memories` 中 `used=true` 的项目以及 `metrics`，用于演示记忆效果和成本。
+- 账号接入后所有请求使用 `credentials: include`，启动时通过 `/api/auth/me` 恢复登录状态。
+- 前端不保存密码和 Session Token；表单只使用标准 `autocomplete` 配合浏览器密码管理器。
 
 ## 14. 基本情况覆盖检查
 
 | 情况 | 接口行为 | 是否覆盖 |
 | --- | --- | --- |
 | 首次对话 | `conversation_id=null`，服务端创建会话 | 是 |
+| 阶段一认证路由 | 返回 `503 AUTHENTICATION_UNAVAILABLE`，不伪造成功 | 是 |
+| 注册新账号 | 创建用户、签发 180 天 Session，不返回密码 | 合入真实 AuthService 后验收 |
+| 重复用户名 | 大小写无关比较，返回 `409` | 合入真实 AuthService 后验收 |
+| 错误密码 | 返回统一 `401 INVALID_CREDENTIALS` | 合入真实 AuthService 后验收 |
+| 登录失败过多 | 第 5 次失败后暂停 15 分钟 | 合入真实 AuthService 后验收 |
+| 刷新恢复登录 | `/api/auth/me` 返回当前用户和到期时间 | 合入真实 AuthService 后验收 |
+| Session 过期 | 返回 `401`，要求重新登录 | 合入真实 AuthService 后验收 |
+| 重复退出 | 始终返回 `logged_out=true` | 合入真实 AuthService 后验收 |
+| 账号数据隔离 | 业务路由只采用 Session 用户 ID | 集成阶段验收 |
 | 连续对话 | 校验会话属于当前 `user_id` | 是 |
 | 输入为空 | 返回 `422` 或统一 `400` | 是 |
 | 信息不足 | `status=needs_clarification`，不执行写操作，公共 `tool_calls=[]` | 是 |
@@ -1101,6 +1352,7 @@ metrics.py
 2. `FeedbackRequest`、`FeedbackResponse`。
 3. `MemoryView`、`ReminderView`、`RequestMetrics`。
 4. 统一错误响应。
+5. 认证 Schema、内部签名和显式 `503` 骨架。
 
 ### 第二批：完成主链路
 
@@ -1115,6 +1367,14 @@ metrics.py
 2. 指标汇总。
 3. 重复反馈、重复确认和跨用户测试。
 
+### 第四批：账号与云端部署
+
+1. V3 账号和 Session 数据迁移。
+2. Argon2id 注册登录与 180 天 Session。
+3. 全部业务 API 改用服务端 Session 用户。
+4. 前端登录状态、账号切换和本地历史隔离。
+5. HTTPS、持久化 SQLite 和双账号端到端测试。
+
 ## 16. 合理性结论
 
 该接口集合可以覆盖黑客松 MVP 的所有基本情况，同时保持实现规模可控：
@@ -1125,5 +1385,6 @@ metrics.py
 - 提醒支持一次性、每日和每周重复，不引入通用 Cron 调度系统。
 - 幂等删除和带期望时间的确认可以处理前端重复点击与轮询。
 - 指标直接对应记忆成本、对话速度和记忆效果三个考查点。
+- 服务端 Session 保持实现轻量，同时可以立即撤销并隔离用户数据。
 
-后续若增加登录、可靠通知或向量检索，应新增版本或扩展字段，不修改当前字段语义。
+后续若增加密码找回、多角色权限、可靠通知或向量检索，应新增版本或扩展字段，不修改当前字段语义。
