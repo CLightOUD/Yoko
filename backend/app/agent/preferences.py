@@ -11,14 +11,6 @@ TEMPORARY_MARKERS = ("今天", "这次", "暂时", "现在")
 NEGATION_MARKERS = ("不要", "不再", "别再")
 CLAUSE_SEPARATOR = re.compile(r"[，,。；;！!？?]|并且|同时|另外|以及|但是|但")
 TASK_PREFERENCE_MARKERS = ("提醒", "时间", "都在", "提前", "默认")
-COMMON_INPUT_CORRECTIONS = {
-    "晚丄": "晚上",
-    "早丄": "早上",
-    "提酲": "提醒",
-    "提腥": "提醒",
-    "典半": "点半",
-    "典": "点",
-}
 
 
 @dataclass(frozen=True)
@@ -154,10 +146,7 @@ def extract_preference(text: str) -> PreferenceCandidate | None:
 
 
 def normalize_user_text(text: str) -> str:
-    normalized = " ".join(text.strip().split())
-    for incorrect, corrected in COMMON_INPUT_CORRECTIONS.items():
-        normalized = normalized.replace(incorrect, corrected)
-    return normalized
+    return " ".join(text.strip().split())
 
 
 def _is_negated(clause: str) -> bool:

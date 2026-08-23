@@ -42,10 +42,11 @@ credentials; the other endpoints can run without an LLM key.
 the database and migration version. Chat clients may send an `Idempotency-Key`
 header and must reuse it when retrying the same request.
 
-For a reminder whose missing time can be filled unambiguously from a retrieved
-`preferred_time` memory, the Agent uses a deterministic fast path and calls the
-reminder service without an LLM request. This behavior reduces latency and
-token cost while still reporting the retrieved and used memory.
+Reminder intent and retrieved `preferred_time` memories are interpreted by the
+Agent model before any write tool can run. A mutation guard blocks multiple
+create, update, or delete calls in one request before execution, and each write
+tool verifies a verbatim user-intent quote. Batch changes are handled one item
+at a time to limit accidental or prompt-injected writes.
 
 Run tests:
 
@@ -133,9 +134,20 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 `GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接和迁移版本。
 聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
 
-当提醒请求缺少的时间可以由检索到的 `preferred_time` 记忆唯一补全时，Agent
-会走确定性快速路径，直接调用提醒 Service，不产生大模型请求。响应仍会记录检索
-及实际使用的记忆，从而同时降低延迟和 Token 成本。
+提醒创建采用模型语义门禁：Agent 先结合当前消息、历史和最多 3 条候选记忆判断
+完整意图，只有模型明确调用工具后才写入。`preferred_time` 可以补全缺失钟点，但
+关键词、正则和固定错别字替换不会直接创建提醒；聊天中的长期偏好候选也由同一次
+模型调用进行语义提取，响应仍区分检索到与实际使用的记忆。
+
+Agent 内部提供提醒查询、创建、修改和删除工具。核对、修改或删除前会先读取真实
+提醒状态；只读查询不出现在公共 `tool_calls` 中。创建和改时间还会校验明确钟点或
+实际使用的时间记忆，并核对落库后的本地钟点与用户原话一致，不能把“早上”“晚上”
+等范围自行换成 8 点。每周提醒必须明确星期几，不能自行猜成当天或周日。
+
+提醒写操作采用双层安全保护：消息要求绕过规则，或模型同一轮提出多个创建、修改、删除时，
+都会在工具执行前整批拦截并要求用户重新逐条确认；单个工具还必须提交可核对的用户操作原话。用户最终撤销、
+否定操作，或要求一次性提醒却试图覆盖周期提醒时，工具层会拒绝写入。该策略不改变
+REST API 字段，但一句话批量改动会返回 `needs_clarification`。
 
 运行后端测试：
 

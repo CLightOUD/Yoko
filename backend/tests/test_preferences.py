@@ -2,6 +2,7 @@ from backend.app.agent.preferences import (
     classify_task,
     extract_preference,
     extract_preferences,
+    normalize_user_text,
 )
 
 
@@ -61,12 +62,7 @@ def test_negation_only_skips_the_affected_clause() -> None:
     assert preferences[0].memory_key == "response_style"
 
 
-def test_normalizes_common_key_field_typos_before_extracting_preferences() -> None:
-    preferences = extract_preferences(
-        "记住，以后吃降压药都晚丄7典提酲我，同时回话短点"
-    )
+def test_normalization_does_not_rewrite_semantic_typos() -> None:
+    text = "  记住， 以后吃降压药都晚丄7典提酲我  "
 
-    assert {
-        (preference.memory_key, preference.memory_value)
-        for preference in preferences
-    } == {("preferred_time", "19:00"), ("response_style", "concise")}
+    assert normalize_user_text(text) == "记住， 以后吃降压药都晚丄7典提酲我"

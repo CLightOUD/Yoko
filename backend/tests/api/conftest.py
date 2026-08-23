@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.agent import AgentRunResult
+from backend.app.agent.preferences import extract_preferences
 from backend.app.database import Database
 from backend.app.main import create_app
 from backend.app.schemas import ReminderCreateRequest, ToolCallView
@@ -82,6 +83,7 @@ class FakeAgent:
             memory_tokens=10 if memories else 0,
             model_ms=2,
             tool_ms=sum(call.latency_ms for call in tool_calls),
+            memory_candidates=extract_preferences(message),
         )
 
 

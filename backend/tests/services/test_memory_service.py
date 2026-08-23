@@ -93,6 +93,8 @@ def test_retrieve_returns_task_then_global_and_marks_only_owned_memory(
 
     retrieved = service.retrieve(user_id="demo-user", task_type="walking")
     assert [item.id for item in retrieved] == [task_memory.id, global_memory.id]
+    candidates = service.retrieve_candidates(user_id="demo-user")
+    assert {item.id for item in candidates} == {task_memory.id, global_memory.id}
     assert service.mark_used(
         user_id="demo-user", memory_ids=[task_memory.id, other_memory.id]
     ) == 1

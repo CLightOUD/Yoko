@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from backend.app.agent import AgentRuntime
-from backend.app.agent.preferences import classify_task, extract_preferences
 from backend.app.database import Database
 from backend.app.repositories import (
     ChatRequestRepository,
@@ -197,11 +196,9 @@ class ChatService:
         if user is None:
             raise ResourceNotFoundError("用户不存在")
 
-        task_type = classify_task(request.message)
         retrieval_started = perf_counter()
-        memories = self.memory_service.retrieve(
+        memories = self.memory_service.retrieve_candidates(
             user_id=request.user_id,
-            task_type=task_type,
             limit=3,
         )
         retrieval_ms = max(0, round((perf_counter() - retrieval_started) * 1000))
@@ -279,7 +276,7 @@ class ChatService:
                     source_message_id=execution.user_message_id,
                     connection=connection,
                 )
-                for candidate in extract_preferences(request.message)
+                for candidate in agent_result.memory_candidates
             ]
             assistant_message = self.messages.create(
                 user_id=request.user_id,

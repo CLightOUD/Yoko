@@ -312,7 +312,7 @@ status: active | completed | deleted
 
 | 字段 | 类型 | 可空 | 说明 |
 | --- | --- | --- | --- |
-| `tool_name` | 字符串 | 否 | 稳定工具名，例如 `create_reminder` |
+| `tool_name` | 字符串 | 否 | 稳定的写操作工具名：`create_reminder`、`update_reminder` 或 `delete_reminder` |
 | `status` | 枚举字符串 | 否 | `success` 或 `failed` |
 | `summary` | 字符串 | 否 | 可展示摘要，不包含隐藏推理或敏感参数 |
 | `latency_ms` | 非负整数 | 否 | 单次工具耗时 |
@@ -455,15 +455,27 @@ metrics: RequestMetrics
 
 `tool_calls[].status` 可为 `success` 或 `failed`。不得把失败的提醒工具描述为创建成功。
 
-用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。此时 `/api/chat` 仍正常处理该消息，并通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务返回空数组。
+Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
-当提醒请求已经包含明确日期，仅缺少钟点，且检索到的 `preferred_time` 记忆能够唯一补全该参数时，Agent 可以走确定性记忆快速路径，直接调用 `ReminderService`。此时仍应返回 `used=true` 和成功的 `tool_calls`，但由于没有调用大模型，`model_call_count=0`、`input_tokens=null`、`output_tokens=null`、`memory_tokens=0`。其他开放式任务继续通过 LangChain Agent 处理。
+用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。此时同一次 Agent 模型调用应在结构化结果中返回经过语义理解的记忆候选，`/api/chat` 校验并写入后，通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务、临时状态和不明确偏好返回空数组，不额外调用第二个预处理模型。
 
-当消息明确要求提醒，但只给出“上午”“下午”“晚上”“过会儿”等时间范围，或完全没有钟点，并且没有可用的 `preferred_time` 记忆时，Agent 必须直接返回 `needs_clarification`，不得让模型猜测默认钟点或调用工具。该确定性门禁同样可以减少不必要的模型请求。
+所有创建提醒的请求都必须先由 LangChain Agent 结合当前消息、历史和候选记忆判断语义。即使消息包含明确日期或存在 `preferred_time`，也只有模型实际调用 `create_reminder` 后才能写入；不得通过关键词或正则直接调用 `ReminderService`。
 
-多轮对话中，如果上一轮正在追问提醒钟点，下一轮只补充“下礼拜二上午”等片段，仍应继承提醒语境并继续追问具体钟点。用户询问、复述或确认刚创建的提醒时，只返回现有提醒信息，不得再次调用创建工具。复述日期应同时包含公历日期、星期和钟点，便于老年用户核对。
+创建或修改触发时间时，内部工具必须同时提交时间来源。来源为用户原话时必须包含可验证的明确钟点证据，落库后的用户本地钟点必须与该证据一致；来源为 `preferred_time` 时必须提交本轮实际检索到的记忆 ID，且工具时间必须与记忆值一致。“早上”“晚上”等范围和药物剂量数字不得被当成钟点。
 
-对高频且无歧义的输入错误可在规则层保守归一化，例如“晚丄→晚上”“7典→7点”“提酲→提醒”。归一化必须发生在任务分类和偏好提取之前；不得把药名、剂量或医疗事项按猜测改写。若本轮已经明确给出钟点，`preferred_time` 不得标记为已使用，也不得被本次值覆盖。
+创建 `weekly` 提醒时用户必须明确星期几，工具生成的本地日期也必须与该星期一致；仅说“每周晚上七点”时必须追问。修改已有每周提醒且用户未要求改变星期时，必须保留原星期。
+
+查看、核对、修改或删除已有提醒时，Agent 必须先调用 `list_reminders`，再根据真实 ID 使用 `update_reminder` 或 `delete_reminder`。目标不唯一时只追问；不得用 `create_reminder` 代替修改，也不得在未查询时声称提醒已经修改或删除。
+
+所有提醒写工具还必须提交逐字引用的用户操作依据。依据通常来自当前消息；只有当前消息紧接 Agent 的参数追问时，才允许引用追问前的原始请求。若用户最后撤销或否定操作，工具必须拒绝写入。用户要求额外或单独的一次性提醒时必须新建 `repeat_type=none`，不得覆盖已有 `daily` 或 `weekly` 提醒。
+
+同一次 `/api/chat` 最多执行一项提醒写操作。模型在一次输出中提出多个 `create_reminder`、`update_reminder` 或 `delete_reminder` 时，运行时必须在任何工具执行前整批拦截，并返回 `needs_clarification`，`tool_calls=[]`，请用户指定一项。工具层还要限制每轮最多一次实际写入，防止模型改为逐条循环绕过拦截。用户消息中转述的专家、网页或其他外部内容不能覆盖这些系统规则。
+
+当消息只给出“上午”“下午”“晚上”“过会儿”等时间范围，或完全没有钟点，并且没有可用的 `preferred_time` 记忆时，模型必须返回 `needs_clarification`，不得猜测默认钟点或调用工具。
+
+多轮对话中，模型必须结合历史理解补充片段；如果上一轮正在追问提醒钟点，下一轮只补充“下礼拜二上午”，应继承提醒语境并继续追问具体钟点。用户询问、复述或确认刚创建的提醒时，只返回现有提醒信息，不得再次调用创建工具。复述日期应同时包含公历日期、星期和钟点，便于老年用户核对。
+
+规则层只进行空白等不改变语义的基础清洗，不维护错别字替换表。模型按上下文理解常见错别字和口语；涉及日期、钟点、周期、事项、否定或医疗信息且无法唯一理解时必须追问。若本轮已经明确给出钟点，`preferred_time` 不得标记为已使用，也不得被本次值覆盖。
 
 `status` 枚举：
 
@@ -507,7 +519,7 @@ completed | needs_clarification | partial
 
 模型不可用或系统故障导致无法生成有效 `ChatResponse` 时返回 `502`。能够生成解释性回答的工具失败返回 `200 + status=partial`，不使用不存在的 `status=failed`。
 
-携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；当前唯一有副作用的 Agent 工具 `ReminderService.create` 会按提醒计划去重。收尾阶段的记忆、助手消息、指标和缓存响应必须在同一事务中提交。
+携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。收尾阶段的记忆、助手消息、指标和缓存响应必须在同一事务中提交。
 
 ## 8. 用户反馈
 
@@ -614,7 +626,7 @@ FastAPI 注册路由时，应在动态路由 `/api/reminders/{id}` 之前注册�
 
 ### `POST /api/reminders`
 
-用于前端手动创建提醒；Agent 内部工具调用相同的 `ReminderService`，不通过 HTTP 回调自身。
+用于前端手动创建提醒；Agent 的创建、查询、修改和删除工具直接调用相同的 `ReminderService`，不通过 HTTP 回调自身。
 
 Path 参数：无。Query 参数：无。请求体数据模型（Pydantic）：`ReminderCreateRequest`。
 
@@ -1018,7 +1030,9 @@ metrics.py
 
 ### 13.2 Agent 层
 
-- `/api/chat` 负责串联任务分类、最多 3 条记忆检索、模型调用和工具调用。
+- `/api/chat` 负责串联最多 3 条候选记忆检索、模型语义判断和工具调用。
+- 候选记忆不再由关键词任务分类硬过滤；Agent 结合完整语义判断相关性并仅标记实际使用项。
+- 创建提醒必须由模型明确调用工具触发，关键词、正则或错别字替换不得直接产生写操作。
 - Agent 只返回简短结果、工具摘要和记忆使用标记，不暴露隐藏推理过程。
 - Agent 内部调用 `ReminderService`，不得通过 HTTP 请求本项目自己的提醒接口。
 - Agent 必须区分“检索到的记忆”和“最终实际使用的记忆”。
@@ -1049,12 +1063,12 @@ metrics.py
 | 首次对话 | `conversation_id=null`，服务端创建会话 | 是 |
 | 连续对话 | 校验会话属于当前 `user_id` | 是 |
 | 输入为空 | 返回 `422` 或统一 `400` | 是 |
-| 信息不足 | `status=needs_clarification`，不调用提醒工具 | 是 |
+| 信息不足 | `status=needs_clarification`，不执行写操作，公共 `tool_calls=[]` | 是 |
 | 无效时区或过去时间 | 返回 `422` 或 `400 INVALID_REQUEST` | 是 |
 | 没有相关记忆 | `retrieved_memories=[]` | 是 |
 | 找到并使用记忆 | `used=true`，记录 Token 和耗时 | 是 |
 | 找到但未使用记忆 | `used=false`，便于评估误检 | 是 |
-| 无关记忆 | 按 `task_type` 过滤，最多检索 3 条 | 是 |
+| 无关记忆 | 最多提供 3 条候选，由模型判断相关性，未使用项标记 `used=false` | 是 |
 | 明确长期反馈 | 创建或更新记忆 | 是 |
 | 聊天框中的自然语言反馈 | `/api/chat` 返回 `memory_changes` | 是 |
 | 点赞、点踩或编辑结果 | `/api/feedback` 关联原请求 | 是 |

@@ -31,3 +31,6 @@ Thumbs.db
 /Windows环境配置清单.md
 /三人分工与主分支协作流程.md
 /适老陪伴与提醒Agent系统方案.md
+
+# Local adversarial evaluation
+/.local-attack/

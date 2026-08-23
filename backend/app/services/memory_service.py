@@ -159,6 +159,21 @@ class MemoryService:
         )
         return [self._to_view(item) for item in items]
 
+    def retrieve_candidates(
+        self,
+        *,
+        user_id: str,
+        limit: int = 3,
+    ) -> list[MemoryView]:
+        """Return a small neutral candidate set for model-side relevance decisions."""
+        self._require_user(user_id)
+        items, _ = self.memories.list(
+            user_id=user_id,
+            active=True,
+            limit=limit,
+        )
+        return [self._to_view(item) for item in items]
+
     def mark_used(
         self,
         *,
