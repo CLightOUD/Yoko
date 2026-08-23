@@ -34,3 +34,5 @@ Thumbs.db
 
 # Local adversarial evaluation
 /.local-attack/
+
+Yoko-main/
