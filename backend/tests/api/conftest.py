@@ -15,6 +15,7 @@ from backend.app.schemas import ReminderCreateRequest, ToolCallView
 
 class FakeAgent:
     def __init__(self) -> None:
+        self.call_count = 0
         self.last_history = []
 
     def run(
@@ -28,6 +29,7 @@ class FakeAgent:
         history,
         reminder_service,
     ) -> AgentRunResult:
+        self.call_count += 1
         self.last_history = history
         used_ids = [memories[0].id] if memories else []
         tool_calls = []

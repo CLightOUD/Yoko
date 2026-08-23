@@ -10,6 +10,7 @@ from backend.app.main import create_app
 def test_openapi_contains_all_contract_operations(api_app) -> None:
     expected_operations = {
         ("get", "/api/health"),
+        ("get", "/api/ready"),
         ("post", "/api/chat"),
         ("post", "/api/feedback"),
         ("post", "/api/reminders"),
@@ -32,6 +33,13 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
     }
 
     assert actual_operations == expected_operations
+    chat_parameters = document["paths"]["/api/chat"]["post"]["parameters"]
+    assert any(
+        parameter["name"] == "Idempotency-Key"
+        and parameter["in"] == "header"
+        and parameter["required"] is False
+        for parameter in chat_parameters
+    )
 
     for path, operations in document["paths"].items():
         for method, operation in operations.items():
@@ -46,6 +54,36 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
                     method,
                     status_code,
                 )
+
+
+def test_readiness_reports_database_schema(client) -> None:
+    response = client.get("/api/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "database": "ok",
+        "schema_version": 2,
+    }
+
+
+def test_readiness_returns_sanitized_503_when_database_is_unavailable(
+    client, tmp_path
+) -> None:
+    database = client.app.state.database
+    original_path = database.path
+    database.path = tmp_path
+    try:
+        response = client.get("/api/ready")
+    finally:
+        database.path = original_path
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "DATABASE_UNAVAILABLE",
+        "message": "数据库暂不可用",
+        "details": None,
+    }
 
 
 def test_reminder_crud_and_idempotent_acknowledgement(client) -> None:
@@ -120,6 +158,22 @@ def test_validation_and_service_errors_use_error_response(client) -> None:
     assert missing.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
 
 
+def test_validation_error_does_not_echo_raw_input(client) -> None:
+    secret_like_value = "invalid key with secret material"
+    response = client.post(
+        "/api/chat",
+        headers={"Idempotency-Key": secret_like_value},
+        json={"user_id": "demo-user", "message": "你好"},
+    )
+
+    assert response.status_code == 422
+    assert secret_like_value not in response.text
+    assert all(
+        "input" not in detail
+        for detail in response.json()["error"]["details"]
+    )
+
+
 def test_unconfigured_model_returns_documented_502(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -134,6 +188,7 @@ def test_unconfigured_model_returns_documented_502(monkeypatch, tmp_path) -> Non
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert response.json()["error"]["message"] == "模型服务暂不可用，请稍后重试"
 
 
 def test_memory_patch_and_delete_routes(client) -> None:

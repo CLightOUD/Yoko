@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -28,8 +29,9 @@ class MetricsService:
         retrieved_memory_ids: list[UUID] | None = None,
         used_memory_ids: list[UUID] | None = None,
         created_at: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> RequestMetrics:
-        self._require_user(user_id)
+        self._require_user(user_id, connection=connection)
         retrieved_ids = [str(memory_id) for memory_id in (retrieved_memory_ids or [])]
         used_ids = [str(memory_id) for memory_id in (used_memory_ids or [])]
         if len(retrieved_ids) != metrics.retrieved_memory_count:
@@ -38,7 +40,9 @@ class MetricsService:
             raise InvalidRequestError("使用记忆 ID 数量与指标不一致")
         if not set(used_ids).issubset(retrieved_ids):
             raise InvalidRequestError("实际使用的记忆必须来自检索结果")
-        existing = self.metrics.get_by_request(str(request_id))
+        existing = self.metrics.get_by_request(
+            str(request_id), connection=connection
+        )
         if existing is None:
             self.metrics.create(
                 request_id=str(request_id),
@@ -47,6 +51,7 @@ class MetricsService:
                 retrieved_memory_ids=retrieved_ids,
                 used_memory_ids=used_ids,
                 created_at=created_at,
+                connection=connection,
             )
             return metrics
         if existing["user_id"] != user_id:
@@ -78,6 +83,11 @@ class MetricsService:
             to=end,
         )
 
-    def _require_user(self, user_id: str) -> None:
-        if not self.users.exists(user_id):
+    def _require_user(
+        self,
+        user_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if not self.users.exists(user_id, connection=connection):
             raise ResourceNotFoundError("用户不存在")

@@ -1,4 +1,5 @@
 from backend.app.services.errors import (
+    DatabaseUnavailableError,
     InvalidRequestError,
     ModelUnavailableError,
     ResourceConflictError,
@@ -11,6 +12,7 @@ from backend.app.services.metrics_service import MetricsService
 from backend.app.services.reminder_service import ReminderService
 
 __all__ = [
+    "DatabaseUnavailableError",
     "InvalidRequestError",
     "MemoryService",
     "MetricsService",

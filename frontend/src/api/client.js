@@ -33,7 +33,7 @@ function buildQuery(query) {
   return qs ? `?${qs}` : ''
 }
 
-async function request(path, { method = 'GET', query, body } = {}) {
+async function request(path, { method = 'GET', query, body, headers = {} } = {}) {
   const url = `${API_BASE_URL}${path}${buildQuery(query)}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
@@ -42,7 +42,7 @@ async function request(path, { method = 'GET', query, body } = {}) {
   try {
     response = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
@@ -90,16 +90,22 @@ export function getHealth() {
   return request('/api/health')
 }
 
+export function getReadiness() {
+  return request('/api/ready')
+}
+
 // 对话：发送用户消息，返回 Agent 回复与记忆/工具/指标信息
 export function sendChat({
   user_id,
   conversation_id = null,
   message,
   timezone = DEFAULT_TIMEZONE,
+  idempotency_key = null,
 }) {
   return request('/api/chat', {
     method: 'POST',
     body: { user_id, conversation_id, message, timezone },
+    headers: idempotency_key ? { 'Idempotency-Key': idempotency_key } : {},
   })
 }
 

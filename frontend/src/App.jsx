@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BarChart3, Bell, BookMarked, MessageCircle } from 'lucide-react'
-import { getHealth } from './api/client'
+import { getReadiness } from './api/client'
 import ChatPage from './pages/ChatPage'
 import RemindersPage from './pages/RemindersPage'
 import MemoriesPage from './pages/MemoriesPage'
@@ -45,7 +45,7 @@ function App() {
 
   useEffect(() => {
     let alive = true
-    getHealth()
+    getReadiness()
       .then((data) => {
         if (alive) setHealth(data.status === 'ok' ? 'ok' : 'error')
       })

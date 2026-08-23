@@ -20,3 +20,7 @@ class ModelUnavailableError(ServiceError):
 
 class ToolExecutionError(ServiceError):
     pass
+
+
+class DatabaseUnavailableError(ServiceError):
+    pass

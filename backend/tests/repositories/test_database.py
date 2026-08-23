@@ -4,17 +4,19 @@ import sqlite3
 
 import pytest
 
-from backend.app.database import Database
+from backend.app.database import LATEST_SCHEMA_VERSION, Database
 from backend.app.repositories import UserRepository
 
 
 EXPECTED_TABLES = {
+    "chat_requests",
     "feedbacks",
     "memories",
     "memory_events",
     "messages",
     "reminders",
     "request_metrics",
+    "schema_migrations",
     "users",
 }
 
@@ -33,6 +35,8 @@ def test_initialize_is_idempotent_and_seeds_demo_user(database: Database) -> Non
 
     assert EXPECTED_TABLES <= tables
     assert foreign_keys == 1
+    assert database.schema_version() == LATEST_SCHEMA_VERSION
+    assert database.check_readiness() == LATEST_SCHEMA_VERSION
     assert UserRepository(database).get("demo-user") == {
         "id": "demo-user",
         "display_name": "用户",
@@ -107,6 +111,12 @@ def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(
             WHERE type = 'index' AND name = 'uq_reminders_active_schedule'
             """
         ).fetchone()
+        versions = [
+            row["version"]
+            for row in migrated.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
 
     assert "'weekly'" in table_sql
     assert [dict(item) for item in reminders] == [
@@ -116,6 +126,68 @@ def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(
         {"id": "daily", "title": "吃降压药", "status": "active"},
     ]
     assert unique_index is not None
+    assert versions == [1, 2]
+    assert path.with_name("legacy.pre-migration-v1.bak").exists()
+
+
+def test_failed_migration_rolls_back_version_and_schema(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "migration-failure.db"
+    database = Database(path)
+    database.initialize()
+    with database.transaction() as connection:
+        connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+        connection.execute("DROP TABLE chat_requests")
+
+    def fail_migration(connection, applied_at) -> None:
+        del applied_at
+        connection.execute("CREATE TABLE should_rollback (id TEXT PRIMARY KEY)")
+        raise RuntimeError("forced migration failure")
+
+    monkeypatch.setattr(
+        Database,
+        "_migration_chat_requests",
+        staticmethod(fail_migration),
+    )
+
+    with pytest.raises(RuntimeError, match="forced migration failure"):
+        database.initialize()
+
+    with database.connection() as connection:
+        versions = [
+            row["version"]
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
+        rolled_back = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'should_rollback'"
+        ).fetchone()
+
+    assert versions == [1]
+    assert rolled_back is None
+
+
+def test_initialize_rejects_database_from_newer_application(tmp_path) -> None:
+    database = Database(tmp_path / "future-version.db")
+    database.initialize()
+    with database.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO schema_migrations (version, name, applied_at)
+            VALUES (99, 'future', '2026-08-23T00:00:00+00:00')
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="newer than this application"):
+        database.initialize()
+
+
+def test_readiness_rejects_missing_core_table(database: Database) -> None:
+    with database.transaction() as connection:
+        connection.execute("DROP TABLE feedbacks")
+
+    with pytest.raises(RuntimeError, match="required table is missing: feedbacks"):
+        database.check_readiness()
 
 
 def test_transaction_rolls_back_all_writes(database: Database) -> None:

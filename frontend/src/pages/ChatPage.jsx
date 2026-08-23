@@ -112,6 +112,7 @@ export default function ChatPage() {
         conversation_id: conversationId,
         message: text,
         timezone: DEFAULT_TIMEZONE,
+        idempotency_key: crypto.randomUUID(),
       })
       setConversationId(res.conversation_id)
       setMessages((prev) => [

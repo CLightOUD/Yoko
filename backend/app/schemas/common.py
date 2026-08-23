@@ -24,6 +24,7 @@ ErrorCode = Literal[
     "RESOURCE_CONFLICT",
     "MODEL_UNAVAILABLE",
     "TOOL_EXECUTION_FAILED",
+    "DATABASE_UNAVAILABLE",
     "INTERNAL_ERROR",
 ]
 
@@ -49,6 +50,12 @@ class ErrorResponse(APIModel):
 
 class HealthResponse(APIModel):
     status: Literal["ok"]
+
+
+class ReadinessResponse(APIModel):
+    status: Literal["ok"]
+    database: Literal["ok"]
+    schema_version: int = Field(ge=1)
 
 
 class DeleteResponse(APIModel):

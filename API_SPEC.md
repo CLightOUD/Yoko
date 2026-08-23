@@ -1,6 +1,6 @@
 # Yoko API 接口规范
 
-- 版本：`0.1.0`
+- 版本：`0.2.0`
 - 状态：MVP 开发合同
 适用范围：适老陪伴、提醒、反馈记忆与效果评估
 
@@ -70,6 +70,7 @@ API prefix: /api
 - 响应模型中的字段固定返回，不允许后端因值为空而临时省略字段。
 - 列表没有数据时返回 `[]`，可空单值返回 `null`，不能用空字符串代替。
 - 成功响应直接返回对应模型，不额外包裹 `data`；错误响应统一使用 `ErrorResponse`。
+- `POST /api/chat` 可携带 `Idempotency-Key` 请求头；同一次业务请求重试时必须复用原键。
 
 #### 3.2.1 “模型”术语说明
 
@@ -98,6 +99,7 @@ API prefix: /api
 | `409` | 提醒已被修改、确认时间已失效或资源状态冲突 |
 | `422` | Pydantic 字段校验失败 |
 | `502` | 模型或工具故障导致无法形成有效业务响应 |
+| `503` | 数据库或必要运行依赖尚未就绪 |
 | `500` | 未处理的服务端错误 |
 
 ### 3.4 统一错误响应
@@ -121,6 +123,7 @@ RESOURCE_NOT_FOUND
 RESOURCE_CONFLICT
 MODEL_UNAVAILABLE
 TOOL_EXECUTION_FAILED
+DATABASE_UNAVAILABLE
 INTERNAL_ERROR
 ```
 
@@ -149,7 +152,8 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | 接口 | 可能的业务错误 |
 | --- | --- |
 | `GET /api/health` | 通常无业务错误 |
-| `POST /api/chat` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
+| `GET /api/ready` | `503 DATABASE_UNAVAILABLE` |
+| `POST /api/chat` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
 | `POST /api/feedback` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `GET /api/reminders` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -169,7 +173,8 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | 方法 | 路径 | 输入 | 成功状态 | 响应数据模型 |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/health` | 无 | `200` | `HealthResponse` |
-| `POST` | `/api/chat` | Body: `ChatRequest` | `200` | `ChatResponse` |
+| `GET` | `/api/ready` | 无 | `200` | `ReadinessResponse` |
+| `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequest` | `200` | `ChatResponse` |
 | `POST` | `/api/feedback` | Body: `FeedbackRequest` | `200` | `FeedbackResponse` |
 | `POST` | `/api/reminders` | Body: `ReminderCreateRequest` | `201` | `ReminderView` |
 | `GET` | `/api/reminders` | Query: `ReminderListQuery` | `200` | `ReminderListResponse` |
@@ -356,11 +361,23 @@ status: active | completed | deleted
 }
 ```
 
+`GET /api/health` 只表示进程可响应，不访问数据库。
+
+### `GET /api/ready`
+
+输入：无 Path、Query 或 Body 参数。该接口检查 SQLite 可连接、必需表存在且数据库迁移版本与应用一致。成功返回 `200 ReadinessResponse`，包含 `status=ok`、`database=ok` 和当前 `schema_version`；检查失败返回 `503 DATABASE_UNAVAILABLE`，不向客户端暴露文件路径或底层 SQLite 错误。
+
 ## 7. Agent 对话
 
 ### `POST /api/chat`
 
 请求体数据模型（Pydantic）：`ChatRequest`
+
+可选请求头：
+
+| 请求头 | 类型 | 规则 |
+| --- | --- | --- |
+| `Idempotency-Key` | 字符串 | 8 至 128 个字符，只允许字母、数字、点、下划线、冒号和连字符；网络重试必须复用原值 |
 
 ```json
 {
@@ -489,6 +506,8 @@ completed | needs_clarification | partial
 ```
 
 模型不可用或系统故障导致无法生成有效 `ChatResponse` 时返回 `502`。能够生成解释性回答的工具失败返回 `200 + status=partial`，不使用不存在的 `status=failed`。
+
+携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；当前唯一有副作用的 Agent 工具 `ReminderService.create` 会按提醒计划去重。收尾阶段的记忆、助手消息、指标和缓存响应必须在同一事务中提交。
 
 ## 8. 用户反馈
 
@@ -942,6 +961,7 @@ common.py
   ErrorDetail
   ErrorResponse
   HealthResponse
+  ReadinessResponse
   DeleteResponse
 
 chat.py
@@ -1008,6 +1028,9 @@ metrics.py
 - `MemoryService` 负责检索、唯一有效偏好、反馈覆盖、停用和事件日志。
 - `ReminderService` 负责创建、查询、修改、软删除和幂等确认。
 - `MetricsService` 负责写入单次请求指标并计算汇总，不允许前端自行猜测缺失指标。
+- 数据库结构通过 `schema_migrations` 顺序升级；旧版无迁移记录的数据库在执行兼容清理前必须生成 SQLite 备份。
+- `ChatService` 使用 `chat_requests` 记录执行状态和幂等结果；模型调用期间不得持有长事务。
+- Chat 收尾阶段的记忆使用、偏好更新、助手消息、指标和最终响应必须在同一事务中完成。
 - 反馈记录、记忆修改与 `memory_events` 应在同一事务中完成。
 - 提醒确认时比较 `expected_trigger_at`，读取、校验和更新应在同一事务中完成。
 

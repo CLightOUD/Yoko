@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 from backend.app.schemas import ErrorDetail, ErrorResponse
 from backend.app.schemas.common import ErrorCode
 from backend.app.services import (
+    DatabaseUnavailableError,
     InvalidRequestError,
     ModelUnavailableError,
     ResourceConflictError,
@@ -19,6 +21,9 @@ from backend.app.services import (
 )
 
 
+logger = logging.getLogger("yoko.errors")
+
+
 ERROR_DESCRIPTIONS = {
     400: "业务参数无效",
     404: "资源不存在",
@@ -26,6 +31,7 @@ ERROR_DESCRIPTIONS = {
     422: "请求字段校验失败",
     500: "服务器内部错误",
     502: "模型或工具不可用",
+    503: "服务暂不可用",
 }
 
 
@@ -70,7 +76,11 @@ def install_error_handlers(app: FastAPI) -> None:
         exc: RequestValidationError,
     ) -> JSONResponse:
         details = [
-            {key: value for key, value in error.items() if key not in {"ctx", "url"}}
+            {
+                key: value
+                for key, value in error.items()
+                if key not in {"ctx", "input", "url"}
+            }
             for error in exc.errors()
         ]
         return error_response(
@@ -89,13 +99,28 @@ def install_error_handlers(app: FastAPI) -> None:
             ResourceConflictError: (409, "RESOURCE_CONFLICT"),
             ModelUnavailableError: (502, "MODEL_UNAVAILABLE"),
             ToolExecutionError: (502, "TOOL_EXECUTION_FAILED"),
+            DatabaseUnavailableError: (503, "DATABASE_UNAVAILABLE"),
         }
         status_code, code = mapping.get(type(exc), (500, "INTERNAL_ERROR"))
+        logger.warning(
+            "service_error",
+            extra={
+                "request_id": str(request_id_for(request)),
+                "path": request.url.path,
+                "status_code": status_code,
+                "error_type": type(exc).__name__,
+            },
+        )
+        safe_messages = {
+            ModelUnavailableError: "模型服务暂不可用，请稍后重试",
+            ToolExecutionError: "外部工具暂不可用，请稍后重试",
+            DatabaseUnavailableError: "数据库暂不可用",
+        }
         return error_response(
             request,
             status_code=status_code,
             code=code,
-            message=str(exc) or "请求处理失败",
+            message=safe_messages.get(type(exc), str(exc) or "请求处理失败"),
         )
 
     @app.exception_handler(HTTPException)
@@ -112,6 +137,15 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception(
+            "unexpected_error",
+            extra={
+                "request_id": str(request_id_for(request)),
+                "path": request.url.path,
+                "status_code": 500,
+                "error_type": type(exc).__name__,
+            },
+        )
         return error_response(
             request,
             status_code=500,

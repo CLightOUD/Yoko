@@ -159,11 +159,18 @@ class MemoryService:
         )
         return [self._to_view(item) for item in items]
 
-    def mark_used(self, *, user_id: str, memory_ids: Iterable[UUID]) -> int:
-        self._require_user(user_id)
+    def mark_used(
+        self,
+        *,
+        user_id: str,
+        memory_ids: Iterable[UUID],
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        self._require_user(user_id, connection=connection)
         return self.memories.mark_used(
             memory_ids=[str(memory_id) for memory_id in memory_ids],
             user_id=user_id,
+            connection=connection,
         )
 
     def list(self, query: MemoryListQuery) -> MemoryListResponse:

@@ -10,6 +10,7 @@ from backend.app.schemas.common import (
     ErrorDetail,
     ErrorResponse,
     HealthResponse,
+    ReadinessResponse,
 )
 from backend.app.schemas.feedback import (
     FeedbackMetrics,
@@ -46,6 +47,7 @@ __all__ = [
     "FeedbackRequest",
     "FeedbackResponse",
     "HealthResponse",
+    "ReadinessResponse",
     "MemoryChange",
     "MemoryListQuery",
     "MemoryListResponse",

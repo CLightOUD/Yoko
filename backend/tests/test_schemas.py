@@ -65,6 +65,9 @@ def test_all_exported_models_generate_json_schema() -> None:
 
 def test_fixed_success_and_error_literals_are_enforced() -> None:
     assert schemas.HealthResponse(status="ok").status == "ok"
+    assert schemas.ReadinessResponse(
+        status="ok", database="ok", schema_version=2
+    ).schema_version == 2
     assert schemas.DeleteResponse(id=uuid4(), deleted=True).deleted is True
 
     with pytest.raises(ValidationError):

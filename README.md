@@ -32,10 +32,15 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 Keep this terminal open, then visit the API documentation:
 <http://127.0.0.1:8000/docs>
 
-The backend initializes SQLite once during application startup. Reminder,
+The backend applies versioned SQLite migrations during application startup. A
+legacy database is backed up before compatibility cleanup. Reminder,
 memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
 the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
 credentials; the other endpoints can run without an LLM key.
+
+`GET /api/health` is the process liveness check and `GET /api/ready` verifies
+the database and migration version. Chat clients may send an `Idempotency-Key`
+header and must reuse it when retrying the same request.
 
 For a reminder whose missing time can be filled unambiguously from a retrieved
 `preferred_time` memory, the Agent uses a deterministic fast path and calls the
@@ -120,9 +125,13 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 保持该终端运行，然后访问 API 文档：
 <http://127.0.0.1:8000/docs>
 
-后端会在应用启动时初始化一次 SQLite。提醒、记忆、反馈、指标和聊天接口见
+后端会在应用启动时顺序执行版本化 SQLite 迁移；旧版数据库在兼容清理前会自动
+生成备份。提醒、记忆、反馈、指标和聊天接口见
 `API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
 凭据，其他接口不依赖大模型密钥即可运行。
+
+`GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接和迁移版本。
+聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
 
 当提醒请求缺少的时间可以由检索到的 `preferred_time` 记忆唯一补全时，Agent
 会走确定性快速路径，直接调用提醒 Service，不产生大模型请求。响应仍会记录检索

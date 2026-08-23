@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from time import perf_counter
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -18,11 +20,13 @@ from backend.app.api.memories import router as memories_router
 from backend.app.api.metrics import router as metrics_router
 from backend.app.api.reminders import router as reminders_router
 from backend.app.database import Database
+from backend.app.logging_config import configure_logging
 from backend.app.services import MemoryService, MetricsService, ReminderService
 from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
 
 load_dotenv()
+logger = logging.getLogger("yoko.http")
 
 
 def create_app(
@@ -30,6 +34,8 @@ def create_app(
     database: Database | None = None,
     agent: AgentRuntime | None = None,
 ) -> FastAPI:
+    configure_logging()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         active_database = database or Database()
@@ -53,7 +59,7 @@ def create_app(
         app.state.chat_service = chat_service
         yield
 
-    application = FastAPI(title="Yoko API", version="0.1.0", lifespan=lifespan)
+    application = FastAPI(title="Yoko API", version="0.2.0", lifespan=lifespan)
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
     application.add_middleware(
         CORSMiddleware,
@@ -66,9 +72,26 @@ def create_app(
     @application.middleware("http")
     async def attach_request_id(request: Request, call_next):
         request.state.request_id = uuid4()
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = str(request.state.request_id)
-        return response
+        started = perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            response.headers["X-Request-ID"] = str(request.state.request_id)
+            return response
+        finally:
+            logger.info(
+                "http_request",
+                extra={
+                    "request_id": str(request.state.request_id),
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": max(
+                        0, round((perf_counter() - started) * 1000)
+                    ),
+                },
+            )
 
     install_error_handlers(application)
     application.include_router(health_router)
