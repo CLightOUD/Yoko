@@ -14,6 +14,8 @@ const keyOf = (r) => `${r.id}:${r.next_trigger_at}`
 export default function ReminderAlarm() {
   const [alarm, setAlarm] = useState(null)
   const [queue, setQueue] = useState([])
+  const [acknowledging, setAcknowledging] = useState(false)
+  const [ackError, setAckError] = useState('')
   const seenRef = useRef(new Set())
 
   const poll = useCallback(async () => {
@@ -50,24 +52,31 @@ export default function ReminderAlarm() {
   // 有待确认项且当前无弹窗 → 弹出第一条并响铃
   useEffect(() => {
     if (queue.length && !alarm) {
+      setAckError('')
       setAlarm(queue[0])
       playAlarm()
     }
   }, [queue, alarm])
 
-  function handleAck() {
-    if (!alarm) return
+  async function handleAck() {
+    if (!alarm || acknowledging) return
     const target = alarm
     const key = keyOf(target)
-    setAlarm(null)
-    setQueue((prev) => prev.filter((r) => keyOf(r) !== key))
-    seenRef.current.add(key)
-    acknowledgeReminder(target.id, {
-      user_id: USER_ID,
-      expected_trigger_at: target.next_trigger_at,
-    }).catch(() => {
-      // 确认失败：已加入 seen，避免重复弹，不阻塞用户
-    })
+    setAcknowledging(true)
+    setAckError('')
+    try {
+      await acknowledgeReminder(target.id, {
+        user_id: USER_ID,
+        expected_trigger_at: target.next_trigger_at,
+      })
+      seenRef.current.add(key)
+      setQueue((prev) => prev.filter((r) => keyOf(r) !== key))
+      setAlarm(null)
+    } catch (error) {
+      setAckError(error.message || '确认失败，请检查网络后重试')
+    } finally {
+      setAcknowledging(false)
+    }
   }
 
   if (!alarm) return null
@@ -87,8 +96,18 @@ export default function ReminderAlarm() {
         {queue.length > 1 && (
           <div className="alarm-meta">还有 {queue.length - 1} 条待确认</div>
         )}
-        <button className="alarm-ack" type="button" onClick={handleAck}>
-          我知道了
+        {ackError && (
+          <div className="error-banner alarm-error" role="alert">
+            {ackError}。这条提醒会继续保留，请再次确认。
+          </div>
+        )}
+        <button
+          className="alarm-ack"
+          type="button"
+          onClick={handleAck}
+          disabled={acknowledging}
+        >
+          {acknowledging ? '确认中…' : ackError ? '重新确认' : '我知道了'}
         </button>
       </div>
     </div>

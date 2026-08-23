@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { History, Search, Send, X } from 'lucide-react'
+import { History, RefreshCw, Search, Send, X } from 'lucide-react'
 import { sendChat } from '../api/client'
 import {
   CHAT_STATUS,
@@ -207,6 +207,7 @@ export default function ChatPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [retryRequest, setRetryRequest] = useState(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [highlightId, setHighlightId] = useState(null)
   const listEndRef = useRef(null)
@@ -227,25 +228,25 @@ export default function ChatPage() {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  async function handleSend() {
-    const text = input.trim()
-    if (!text || loading) return
-
-    setInput('')
+  async function submitChat(request, { appendUser }) {
     setError('')
-    setMessages((prev) => [
-      ...prev.slice(-MAX_HISTORY + 1),
-      { id: nextId(), role: 'user', text, time: Date.now() },
-    ])
+    if (appendUser) {
+      setMessages((prev) => [
+        ...prev.slice(-MAX_HISTORY + 1),
+        { id: nextId(), role: 'user', text: request.text, time: Date.now() },
+      ])
+    }
     setLoading(true)
 
     try {
       const res = await sendChat({
         user_id: USER_ID,
-        conversation_id: conversationId,
-        message: text,
+        conversation_id: request.conversationId,
+        message: request.text,
         timezone: DEFAULT_TIMEZONE,
+        idempotency_key: request.idempotencyKey,
       })
+      setRetryRequest(null)
       setConversationId(res.conversation_id)
       setMessages((prev) => [
         ...prev.slice(-MAX_HISTORY + 1),
@@ -263,9 +264,29 @@ export default function ChatPage() {
       ])
     } catch (err) {
       setError(err.message || '发送失败，请重试')
+      setRetryRequest(request)
     } finally {
       setLoading(false)
     }
+  }
+
+  function handleSend() {
+    const text = input.trim()
+    if (!text || loading) return
+
+    const request = {
+      text,
+      conversationId,
+      idempotencyKey: crypto.randomUUID(),
+    }
+    setInput('')
+    setRetryRequest(null)
+    submitChat(request, { appendUser: true })
+  }
+
+  function handleRetry() {
+    if (!retryRequest || loading) return
+    submitChat(retryRequest, { appendUser: false })
   }
 
   function handleKeyDown(event) {
@@ -342,8 +363,19 @@ export default function ChatPage() {
       </div>
 
       {error && (
-        <div className="error-banner" role="alert">
-          {error}
+        <div className="error-banner error-banner--action" role="alert">
+          <span>{error}</span>
+          {retryRequest && (
+            <button
+              className="btn btn--secondary btn--small"
+              type="button"
+              onClick={handleRetry}
+              disabled={loading}
+            >
+              <RefreshCw aria-hidden="true" />
+              {loading ? '重试中…' : '重试发送'}
+            </button>
+          )}
         </div>
       )}
 
