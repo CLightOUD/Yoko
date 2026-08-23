@@ -36,3 +36,5 @@ Thumbs.db
 /.local-attack/
 
 Yoko-main/
+
+*.bak
