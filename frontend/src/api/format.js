@@ -68,4 +68,12 @@ export function localToIso(localDateTime) {
   return `${localDateTime}:00+08:00`
 }
 
+// 把带时区 ISO 转回 <input type="datetime-local"> 的本地输入值（注意：datetime-local 本身无时区，
+// 与 localToIso 的 +08:00 对称，仅用于回填编辑表单展示，避免时区偏移）。
+export function isoToLocalInput(iso) {
+  const p = toShanghaiParts(iso)
+  if (!p) return ''
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`
+}
+
 export { DEFAULT_TIMEZONE }

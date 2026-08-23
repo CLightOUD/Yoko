@@ -5,6 +5,7 @@ import ChatPage from './pages/ChatPage'
 import RemindersPage from './pages/RemindersPage'
 import MemoriesPage from './pages/MemoriesPage'
 import MetricsPage from './pages/MetricsPage'
+import ReminderAlarm from './ReminderAlarm'
 import './App.css'
 
 const TABS = [
@@ -60,7 +61,10 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Yoko 关怀助手</h1>
+        <div className="app-brand">
+          <img className="app-logo" src="/logo.svg" alt="渔歌" />
+          <h1>Yoko 关怀助手</h1>
+        </div>
         <HealthBadge status={health} />
       </header>
 
@@ -94,6 +98,8 @@ function App() {
           </button>
         ))}
       </nav>
+
+      <ReminderAlarm />
     </div>
   )
 }
