@@ -110,6 +110,13 @@
   padding: 20px 16px 96px;
 }
 
+.app-notice {
+  width: 100%;
+  max-width: 760px;
+  margin: 16px auto 0;
+  padding: 0 16px;
+}
+
 /* 页面容器 */
 .page {
   display: flex;

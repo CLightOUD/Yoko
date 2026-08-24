@@ -7,7 +7,7 @@ import {
   TASK_TYPE_LABEL,
   TOOL_STATUS,
 } from '../api/constants'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import { formatMs } from '../api/format'
 
 let idCounter = 0

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Eye, EyeOff, KeyRound, LogIn, UserPlus } from 'lucide-react'
-import { useAuth } from '../auth/AuthContext'
+import { useAuth } from '../auth/useAuth'
 import { DEFAULT_TIMEZONE } from '../api/constants'
 
 const USERNAME_PATTERN = /^[A-Za-z0-9_]+$/
@@ -81,7 +81,6 @@ export default function AuthPage() {
       className="auth-pass-toggle"
       onClick={() => setShowPassword((prev) => !prev)}
       aria-label={showPassword ? '隐藏密码' : '显示密码'}
-      tabIndex={-1}
     >
       {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
     </button>

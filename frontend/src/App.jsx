@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { BarChart3, Bell, BookMarked, LogOut, MessageCircle } from 'lucide-react'
 import { getReadiness } from './api/client'
 import { AUTH_STATUS } from './api/constants'
-import { AuthProvider, useAuth } from './auth/AuthContext'
+import { AuthProvider } from './auth/AuthContext'
+import { useAuth } from './auth/useAuth'
 import AuthPage from './pages/AuthPage'
 import ChatPage from './pages/ChatPage'
 import RemindersPage from './pages/RemindersPage'
@@ -64,12 +65,32 @@ function StartupScreen() {
   )
 }
 
+function SessionErrorScreen({ message, onRetry }) {
+  return (
+    <div className="auth-page">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <img className="app-logo" src="/logo.svg" alt="渔歌" />
+          <h1>Yoko 关怀助手</h1>
+        </div>
+        <div className="error-banner" role="alert">
+          {message || '暂时无法确认登录状态，请稍后重试'}
+        </div>
+        <button className="btn auth-submit" type="button" onClick={onRetry}>
+          重新连接
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // 已登录后的主界面
 function MainApp() {
   const { user, logout } = useAuth()
   const [tab, setTab] = useState('chat')
   const [health, setHealth] = useState('checking')
   const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -87,11 +108,16 @@ function MainApp() {
 
   async function handleLogout() {
     if (loggingOut) return
+    setLogoutError('')
     setLoggingOut(true)
-    // logout 内部无论成功失败都会清除认证状态并回到登录页
-    await logout().catch(() => {})
-    setTab('chat')
-    setLoggingOut(false)
+    try {
+      await logout()
+      setTab('chat')
+    } catch (err) {
+      setLogoutError(err?.message || '退出登录失败，请稍后重试')
+    } finally {
+      setLoggingOut(false)
+    }
   }
 
   return (
@@ -119,6 +145,14 @@ function MainApp() {
           )}
         </div>
       </header>
+
+      {logoutError && (
+        <div className="app-notice">
+          <div className="error-banner" role="alert">
+            退出未完成：{logoutError}。您仍处于登录状态。
+          </div>
+        </div>
+      )}
 
       <main className="app-main">
         {/* 保持所有页面挂载，仅用 display 控制显隐，避免切换 Tab 丢失状态 */}
@@ -157,8 +191,11 @@ function MainApp() {
 }
 
 function Gate() {
-  const { status } = useAuth()
+  const { status, error, restoreSession } = useAuth()
   if (status === AUTH_STATUS.LOADING) return <StartupScreen />
+  if (status === AUTH_STATUS.ERROR) {
+    return <SessionErrorScreen message={error} onRetry={restoreSession} />
+  }
   if (status === AUTH_STATUS.UNAUTHENTICATED) return <AuthPage />
   return <MainApp />
 }

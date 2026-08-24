@@ -84,6 +84,7 @@ export const AUTH_STATUS = {
   LOADING: 'loading',
   AUTHENTICATED: 'authenticated',
   UNAUTHENTICATED: 'unauthenticated',
+  ERROR: 'error',
 }
 
 // 面向用户的中文显示标签
