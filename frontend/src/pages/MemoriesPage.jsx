@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Pause, RefreshCw, Trash2 } from 'lucide-react'
 import { deleteMemory, listMemories, updateMemory } from '../api/client'
-import {
-  MEMORY_SCOPE,
-  TASK_TYPE_LABEL,
-  USER_ID,
-} from '../api/constants'
+import { MEMORY_SCOPE, TASK_TYPE_LABEL } from '../api/constants'
 import { formatDateTime } from '../api/format'
 
 export default function MemoriesPage() {
@@ -18,7 +14,7 @@ export default function MemoriesPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await listMemories({ user_id: USER_ID, active: true })
+      const res = await listMemories({ active: true })
       setItems(res.items)
       setTotal(res.total)
     } catch (err) {
@@ -34,7 +30,7 @@ export default function MemoriesPage() {
 
   async function handleDisable(id) {
     try {
-      await updateMemory(id, { user_id: USER_ID, active: false })
+      await updateMemory(id, { active: false })
       load()
     } catch (err) {
       setError(err.message || '操作失败，请重试')
@@ -45,7 +41,7 @@ export default function MemoriesPage() {
     const confirmed = window.confirm(`确定要删除“${displayText}”这条记忆吗？`)
     if (!confirmed) return
     try {
-      await deleteMemory(id, USER_ID)
+      await deleteMemory(id)
       load()
     } catch (err) {
       setError(err.message || '删除失败，请重试')

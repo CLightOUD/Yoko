@@ -13,7 +13,6 @@ import {
   REMINDER_STATUS_LABEL,
   REPEAT_TYPE,
   REPEAT_TYPE_LABEL,
-  USER_ID,
 } from '../api/constants'
 import { formatFullDateTime, isoToLocalInput, localToIso } from '../api/format'
 
@@ -42,7 +41,6 @@ function CreateReminderForm({ onCreated }) {
     setSubmitting(true)
     try {
       await createReminder({
-        user_id: USER_ID,
         title: title.trim(),
         next_trigger_at: localToIso(triggerAt),
         timezone: DEFAULT_TIMEZONE,
@@ -134,7 +132,6 @@ function EditReminderForm({ reminder, onCancel, onSaved }) {
     setSubmitting(true)
     try {
       await updateReminder(reminder.id, {
-        user_id: USER_ID,
         title: title.trim(),
         next_trigger_at: localToIso(triggerAt),
         repeat_type: repeatType,
@@ -219,7 +216,7 @@ export default function RemindersPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await listReminders({ user_id: USER_ID, status: filter })
+      const res = await listReminders({ status: filter })
       setItems(res.items)
       setTotal(res.total)
     } catch (err) {
@@ -240,7 +237,7 @@ export default function RemindersPage() {
     const confirmed = window.confirm(`确定要删除“${title}”这个提醒吗？`)
     if (!confirmed) return
     try {
-      await deleteReminder(id, USER_ID)
+      await deleteReminder(id)
       load()
     } catch (err) {
       setError(err.message || '删除失败，请重试')

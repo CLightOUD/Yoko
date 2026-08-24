@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bell } from 'lucide-react'
 import { acknowledgeReminder, listDueReminders } from './api/client'
-import { REPEAT_TYPE_LABEL, USER_ID } from './api/constants'
+import { REPEAT_TYPE_LABEL } from './api/constants'
 import { formatFullDateTime } from './api/format'
 import { playAlarm, unlockAudio } from './alarm'
 
@@ -20,7 +20,7 @@ export default function ReminderAlarm() {
 
   const poll = useCallback(async () => {
     try {
-      const res = await listDueReminders({ user_id: USER_ID, limit: 20 })
+      const res = await listDueReminders({ limit: 20 })
       // 同一提醒确认前可能被多次轮询到，按 id + next_trigger_at 去重
       const fresh = (res.items ?? []).filter((r) => !seenRef.current.has(keyOf(r)))
       if (fresh.length === 0) return
@@ -66,7 +66,6 @@ export default function ReminderAlarm() {
     setAckError('')
     try {
       await acknowledgeReminder(target.id, {
-        user_id: USER_ID,
         expected_trigger_at: target.next_trigger_at,
       })
       seenRef.current.add(key)

@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
-import { BarChart3, Bell, BookMarked, MessageCircle } from 'lucide-react'
+import { BarChart3, Bell, BookMarked, LogOut, MessageCircle } from 'lucide-react'
 import { getReadiness } from './api/client'
+import { AUTH_STATUS } from './api/constants'
+import { AuthProvider, useAuth } from './auth/AuthContext'
+import AuthPage from './pages/AuthPage'
 import ChatPage from './pages/ChatPage'
 import RemindersPage from './pages/RemindersPage'
 import MemoriesPage from './pages/MemoriesPage'
@@ -40,9 +43,33 @@ function HealthBadge({ status }) {
   )
 }
 
-function App() {
+function StartupScreen() {
+  return (
+    <div className="auth-page">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <img className="app-logo" src="/logo.svg" alt="渔歌" />
+          <h1>Yoko 关怀助手</h1>
+        </div>
+        <p className="auth-hint">
+          <span className="typing" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          正在恢复登录…
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// 已登录后的主界面
+function MainApp() {
+  const { user, logout } = useAuth()
   const [tab, setTab] = useState('chat')
   const [health, setHealth] = useState('checking')
+  const [loggingOut, setLoggingOut] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -58,6 +85,15 @@ function App() {
     }
   }, [])
 
+  async function handleLogout() {
+    if (loggingOut) return
+    setLoggingOut(true)
+    // logout 内部无论成功失败都会清除认证状态并回到登录页
+    await logout().catch(() => {})
+    setTab('chat')
+    setLoggingOut(false)
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -65,7 +101,23 @@ function App() {
           <img className="app-logo" src="/logo.svg" alt="渔歌" />
           <h1>Yoko 关怀助手</h1>
         </div>
-        <HealthBadge status={health} />
+        <div className="app-header-right">
+          <HealthBadge status={health} />
+          {user && (
+            <button
+              type="button"
+              className="account-btn"
+              onClick={handleLogout}
+              disabled={loggingOut}
+              title="退出登录"
+            >
+              <span className="account-btn__name">
+                {user.display_name || user.username}
+              </span>
+              <LogOut aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </header>
 
       <main className="app-main">
@@ -101,6 +153,21 @@ function App() {
 
       <ReminderAlarm />
     </div>
+  )
+}
+
+function Gate() {
+  const { status } = useAuth()
+  if (status === AUTH_STATUS.LOADING) return <StartupScreen />
+  if (status === AUTH_STATUS.UNAUTHENTICATED) return <AuthPage />
+  return <MainApp />
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <Gate />
+    </AuthProvider>
   )
 }
 

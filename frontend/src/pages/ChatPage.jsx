@@ -3,12 +3,11 @@ import { History, RefreshCw, Search, Send, X } from 'lucide-react'
 import { sendChat } from '../api/client'
 import {
   CHAT_STATUS,
-  DEFAULT_TIMEZONE,
   MEMORY_ACTION_LABEL,
   TASK_TYPE_LABEL,
   TOOL_STATUS,
-  USER_ID,
 } from '../api/constants'
+import { useAuth } from '../auth/AuthContext'
 import { formatMs } from '../api/format'
 
 let idCounter = 0
@@ -18,21 +17,21 @@ function nextId() {
 }
 
 // 本地持久化：MVP 后端不保留历史会话，聊天记录存浏览器，保证刷新后仍可找回。
-const STORAGE_KEY = `yoko.chat.${USER_ID}`
+// 按当前用户 ID 隔离，避免账号切换后串号。
 const MAX_HISTORY = 300
 
-function loadHistory() {
+function loadHistory(storageKey) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(storageKey)
     return raw ? JSON.parse(raw) : { messages: [], conversationId: null }
   } catch {
     return { messages: [], conversationId: null }
   }
 }
 
-function saveHistory(messages, conversationId) {
+function saveHistory(storageKey, messages, conversationId) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages, conversationId }))
+    localStorage.setItem(storageKey, JSON.stringify({ messages, conversationId }))
   } catch {
     // 存储已满或被禁用时静默忽略，不影响当前对话
   }
@@ -112,11 +111,14 @@ function AssistantBubble({ msg, highlighted }) {
   )
 }
 
-function HistoryPanel({ open, onClose, onSelect }) {
+function HistoryPanel({ open, onClose, onSelect, storageKey }) {
   const [query, setQuery] = useState('')
   const history = useMemo(
-    () => (open ? loadHistory() : { messages: [], conversationId: null }),
-    [open],
+    () =>
+      open
+        ? loadHistory(storageKey)
+        : { messages: [], conversationId: null },
+    [open, storageKey],
   )
 
   const all = useMemo(() => {
@@ -202,6 +204,11 @@ function HistoryPanel({ open, onClose, onSelect }) {
 }
 
 export default function ChatPage() {
+  const { user } = useAuth()
+  const userId = user?.id ?? 'anonymous'
+  // 按当前用户隔离本地聊天历史，账号切换后不会看到上一账号的记录
+  const storageKey = `yoko.chat.${userId}`
+
   const [messages, setMessages] = useState([])
   const [conversationId, setConversationId] = useState(null)
   const [input, setInput] = useState('')
@@ -214,15 +221,15 @@ export default function ChatPage() {
 
   // 惰性恢复上次会话
   useEffect(() => {
-    const stored = loadHistory()
+    const stored = loadHistory(storageKey)
     if (stored.messages?.length) setMessages(stored.messages)
     if (stored.conversationId) setConversationId(stored.conversationId)
-  }, [])
+  }, [storageKey])
 
   // 持久化到本地
   useEffect(() => {
-    if (messages.length) saveHistory(messages, conversationId)
-  }, [messages, conversationId])
+    if (messages.length) saveHistory(storageKey, messages, conversationId)
+  }, [storageKey, messages, conversationId])
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -240,10 +247,8 @@ export default function ChatPage() {
 
     try {
       const res = await sendChat({
-        user_id: USER_ID,
         conversation_id: request.conversationId,
         message: request.text,
-        timezone: DEFAULT_TIMEZONE,
         idempotency_key: request.idempotencyKey,
       })
       setRetryRequest(null)
@@ -403,6 +408,7 @@ export default function ChatPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         onSelect={handleSelectHistory}
+        storageKey={storageKey}
       />
     </div>
   )

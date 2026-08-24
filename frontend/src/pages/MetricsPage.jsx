@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { getMetricsSummary } from '../api/client'
-import { USER_ID } from '../api/constants'
 import { formatDateTime, formatMs } from '../api/format'
 
 function ratio(numerator, denominator) {
@@ -30,7 +29,7 @@ export default function MetricsPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await getMetricsSummary({ user_id: USER_ID })
+      const res = await getMetricsSummary()
       setSummary(res)
     } catch (err) {
       setError(err.message || '加载指标失败')

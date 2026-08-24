@@ -10,6 +10,9 @@ const API_BASE_URL =
 
 const REQUEST_TIMEOUT_MS = 30000
 
+// 任一受保护接口确认登录过期时派发，认证状态统一回到登录页（见 API_SPEC 3.5）。
+const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
+
 // 统一错误对象：把 ErrorResponse 转成可判定的异常（见 API_SPEC 3.4）。
 export class ApiError extends Error {
   constructor({ code, message, details = null, requestId = null, status }) {
@@ -42,6 +45,7 @@ async function request(path, { method = 'GET', query, body, headers = {} } = {})
   try {
     response = await fetch(url, {
       method,
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
@@ -67,6 +71,13 @@ async function request(path, { method = 'GET', query, body, headers = {} } = {})
 
   if (!response.ok) {
     if (payload?.error) {
+      // Session 过期/失效时统一通知认证状态（登录与 /me 自身的 401 由调用方处理）
+      if (
+        response.status === 401 &&
+        payload.error.code === ERROR_CODE.AUTHENTICATION_REQUIRED
+      ) {
+        window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+      }
       throw new ApiError({
         code: payload.error.code,
         message: payload.error.message,
@@ -94,24 +105,49 @@ export function getReadiness() {
   return request('/api/ready')
 }
 
+// 认证：见 API_SPEC 5.9
+export function registerUser({ username, password, display_name, timezone = DEFAULT_TIMEZONE }) {
+  return request('/api/auth/register', {
+    method: 'POST',
+    body: { username, password, display_name, timezone },
+  })
+}
+
+export function loginUser({ username, password }) {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: { username, password },
+  })
+}
+
+export function getCurrentUser() {
+  return request('/api/auth/me')
+}
+
+export function logoutUser() {
+  return request('/api/auth/logout', { method: 'POST' })
+}
+
 // 对话：发送用户消息，返回 Agent 回复与记忆/工具/指标信息
 export function sendChat({
-  user_id,
   conversation_id = null,
   message,
-  timezone = DEFAULT_TIMEZONE,
+  timezone = null,
   idempotency_key = null,
 }) {
   return request('/api/chat', {
     method: 'POST',
-    body: { user_id, conversation_id, message, timezone },
+    body: {
+      conversation_id,
+      message,
+      timezone,
+    },
     headers: idempotency_key ? { 'Idempotency-Key': idempotency_key } : {},
   })
 }
 
 // 结构化反馈：点赞/点踩/编辑
 export function sendFeedback({
-  user_id,
   request_id,
   feedback_text = null,
   corrected_reply = null,
@@ -119,13 +155,12 @@ export function sendFeedback({
 }) {
   return request('/api/feedback', {
     method: 'POST',
-    body: { user_id, request_id, feedback_text, corrected_reply, rating },
+    body: { request_id, feedback_text, corrected_reply, rating },
   })
 }
 
 // 创建提醒
 export function createReminder({
-  user_id,
   title,
   next_trigger_at,
   timezone = DEFAULT_TIMEZONE,
@@ -133,28 +168,27 @@ export function createReminder({
 }) {
   return request('/api/reminders', {
     method: 'POST',
-    body: { user_id, title, next_trigger_at, timezone, repeat_type },
+    body: { title, next_trigger_at, timezone, repeat_type },
   })
 }
 
 // 查询提醒列表
 export function listReminders({
-  user_id,
   status = REMINDER_STATUS.ACTIVE,
   limit = 50,
   offset = 0,
 }) {
   return request('/api/reminders', {
     method: 'GET',
-    query: { user_id, status, limit, offset },
+    query: { status, limit, offset },
   })
 }
 
 // 查询到期提醒
-export function listDueReminders({ user_id, limit = 20 }) {
+export function listDueReminders({ limit = 20 }) {
   return request('/api/reminders/due', {
     method: 'GET',
-    query: { user_id, limit },
+    query: { limit },
   })
 }
 
@@ -162,35 +196,33 @@ export function listDueReminders({ user_id, limit = 20 }) {
 export function updateReminder(id, fields) {
   return request(`/api/reminders/${id}`, {
     method: 'PATCH',
-    body: { ...fields, user_id: fields.user_id },
+    body: fields,
   })
 }
 
 // 删除提醒（软删除）
-export function deleteReminder(id, user_id) {
+export function deleteReminder(id) {
   return request(`/api/reminders/${id}`, {
     method: 'DELETE',
-    query: { user_id },
   })
 }
 
 // 确认提醒并推进周期
-export function acknowledgeReminder(id, { user_id, expected_trigger_at }) {
+export function acknowledgeReminder(id, { expected_trigger_at }) {
   return request(`/api/reminders/${id}/ack`, {
     method: 'POST',
-    body: { user_id, expected_trigger_at },
+    body: { expected_trigger_at },
   })
 }
 
 // 查询记忆
 export function listMemories({
-  user_id,
   active = true,
   task_type = null,
   limit = 50,
   offset = 0,
 }) {
-  const query = { user_id, limit, offset }
+  const query = { limit, offset }
   if (active !== null && active !== undefined) query.active = active
   if (task_type) query.task_type = task_type
   return request('/api/memories', { method: 'GET', query })
@@ -200,21 +232,20 @@ export function listMemories({
 export function updateMemory(id, fields) {
   return request(`/api/memories/${id}`, {
     method: 'PATCH',
-    body: { ...fields, user_id: fields.user_id },
+    body: fields,
   })
 }
 
 // 删除记忆（软删除）
-export function deleteMemory(id, user_id) {
+export function deleteMemory(id) {
   return request(`/api/memories/${id}`, {
     method: 'DELETE',
-    query: { user_id },
   })
 }
 
 // 查询指标汇总
-export function getMetricsSummary({ user_id, from = null, to = null }) {
-  const query = { user_id }
+export function getMetricsSummary({ from = null, to = null } = {}) {
+  const query = {}
   if (from) query.from = from
   if (to) query.to = to
   return request('/api/metrics/summary', { method: 'GET', query })
