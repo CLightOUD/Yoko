@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 DEFAULT_DATABASE_PATH = Path("backend/data/app.db")
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 
 MIGRATION_TABLE_SQL = """
@@ -174,6 +174,24 @@ CREATE INDEX idx_chat_requests_status_lease
 """
 
 
+AUTH_SESSIONS_SQL = """
+CREATE TABLE auth_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    token_hash TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_seen_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX idx_auth_sessions_user_expires
+    ON auth_sessions(user_id, expires_at);
+CREATE INDEX idx_auth_sessions_expires_revoked
+    ON auth_sessions(expires_at, revoked_at);
+"""
+
+
 class Database:
     """SQLite connection, schema initialization, and transaction boundary."""
 
@@ -212,6 +230,7 @@ class Database:
             migrations = (
                 (1, "baseline_schema", self._migration_baseline),
                 (2, "chat_request_idempotency", self._migration_chat_requests),
+                (3, "account_authentication", self._migration_account_authentication),
             )
             for version, name, migration in migrations:
                 if version in applied:
@@ -249,6 +268,7 @@ class Database:
                     UNION ALL SELECT 'feedbacks'
                     UNION ALL SELECT 'request_metrics'
                     UNION ALL SELECT 'chat_requests'
+                    UNION ALL SELECT 'auth_sessions'
                 ) expected
                 WHERE name NOT IN (
                     SELECT name FROM sqlite_master WHERE type = 'table'
@@ -307,6 +327,39 @@ class Database:
     ) -> None:
         del applied_at
         Database._execute_script(connection, CHAT_REQUESTS_SQL)
+
+    @staticmethod
+    def _migration_account_authentication(
+        connection: sqlite3.Connection,
+        applied_at: str,
+    ) -> None:
+        del applied_at
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        additions = (
+            ("username", "TEXT"),
+            ("username_normalized", "TEXT"),
+            ("password_hash", "TEXT"),
+            ("disabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_login_at", "TEXT"),
+            ("failed_login_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("login_blocked_until", "TEXT"),
+        )
+        for column, definition in additions:
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE users ADD COLUMN {column} {definition}"
+                )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username_normalized
+            ON users(username_normalized)
+            WHERE username_normalized IS NOT NULL
+            """
+        )
+        Database._execute_script(connection, AUTH_SESSIONS_SQL)
 
     @staticmethod
     def _execute_script(connection: sqlite3.Connection, script: str) -> None:

@@ -4,11 +4,18 @@ import sqlite3
 
 import pytest
 
-from backend.app.database import LATEST_SCHEMA_VERSION, Database
+from backend.app.database import (
+    CHAT_REQUESTS_SQL,
+    MIGRATION_TABLE_SQL,
+    SCHEMA_SQL,
+    LATEST_SCHEMA_VERSION,
+    Database,
+)
 from backend.app.repositories import UserRepository
 
 
 EXPECTED_TABLES = {
+    "auth_sessions",
     "chat_requests",
     "feedbacks",
     "memories",
@@ -37,12 +44,20 @@ def test_initialize_is_idempotent_and_seeds_demo_user(database: Database) -> Non
     assert foreign_keys == 1
     assert database.schema_version() == LATEST_SCHEMA_VERSION
     assert database.check_readiness() == LATEST_SCHEMA_VERSION
-    assert UserRepository(database).get("demo-user") == {
+    demo_user = UserRepository(database).get("demo-user")
+    assert demo_user == {
         "id": "demo-user",
         "display_name": "用户",
         "timezone": "Asia/Shanghai",
-        "created_at": UserRepository(database).get("demo-user")["created_at"],
-        "updated_at": UserRepository(database).get("demo-user")["updated_at"],
+        "created_at": demo_user["created_at"],
+        "updated_at": demo_user["updated_at"],
+        "username": None,
+        "username_normalized": None,
+        "password_hash": None,
+        "disabled": 0,
+        "last_login_at": None,
+        "failed_login_count": 0,
+        "login_blocked_until": None,
     }
 
 
@@ -126,8 +141,80 @@ def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(
         {"id": "daily", "title": "吃降压药", "status": "active"},
     ]
     assert unique_index is not None
-    assert versions == [1, 2]
+    assert versions == [1, 2, 3]
     assert path.with_name("legacy.pre-migration-v1.bak").exists()
+
+
+def test_v2_to_v3_migration_preserves_owned_business_data(tmp_path) -> None:
+    path = tmp_path / "v2.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        f"{MIGRATION_TABLE_SQL};\n{SCHEMA_SQL}\n{CHAT_REQUESTS_SQL}"
+    )
+    connection.executescript(
+        """
+        INSERT INTO schema_migrations VALUES (1, 'baseline_schema', '2026-01-01');
+        INSERT INTO schema_migrations VALUES (
+            2, 'chat_request_idempotency', '2026-01-02'
+        );
+        INSERT INTO users VALUES (
+            'legacy-user', '旧用户', 'Asia/Shanghai', '2026-01-01', '2026-01-01'
+        );
+        INSERT INTO messages (
+            id, user_id, conversation_id, role, content, created_at
+        ) VALUES (
+            'message-1', 'legacy-user', 'conversation-1', 'user', '你好',
+            '2026-01-03T00:00:00+00:00'
+        );
+        INSERT INTO reminders VALUES (
+            'reminder-1', 'legacy-user', '散步',
+            '2027-01-01T00:00:00+00:00', 'Asia/Shanghai', 'none', 'active',
+            NULL, '2026-01-03T00:00:00+00:00', '2026-01-03T00:00:00+00:00'
+        );
+        INSERT INTO memories (
+            id, user_id, scope, task_type, memory_key, memory_value,
+            display_text, active, created_at, updated_at
+        ) VALUES (
+            'memory-1', 'legacy-user', 'global', 'global', 'language', 'zh',
+            '使用中文', 1, '2026-01-03T00:00:00+00:00',
+            '2026-01-03T00:00:00+00:00'
+        );
+        INSERT INTO request_metrics (
+            id, request_id, user_id, model_call_count, input_tokens,
+            output_tokens, memory_tokens, retrieved_memory_count,
+            used_memory_count, retrieval_ms, model_ms, tool_ms, total_ms,
+            created_at
+        ) VALUES (
+            'metric-1', 'request-1', 'legacy-user', 1, 10, 5, 2, 1, 1,
+            1, 2, 3, 6, '2026-01-03T00:00:00+00:00'
+        );
+        """
+    )
+    connection.close()
+
+    database = Database(path)
+    database.initialize()
+
+    with database.connection() as migrated:
+        counts = {
+            table: migrated.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("messages", "reminders", "memories", "request_metrics")
+        }
+        owners = {
+            table: migrated.execute(f"SELECT user_id FROM {table}").fetchone()[0]
+            for table in ("messages", "reminders", "memories", "request_metrics")
+        }
+        account = migrated.execute(
+            """
+            SELECT username, username_normalized, password_hash
+            FROM users WHERE id = 'legacy-user'
+            """
+        ).fetchone()
+
+    assert database.schema_version() == 3
+    assert counts == {table: 1 for table in counts}
+    assert owners == {table: "legacy-user" for table in owners}
+    assert tuple(account) == (None, None, None)
 
 
 def test_failed_migration_rolls_back_version_and_schema(tmp_path, monkeypatch) -> None:
@@ -135,8 +222,9 @@ def test_failed_migration_rolls_back_version_and_schema(tmp_path, monkeypatch) -
     database = Database(path)
     database.initialize()
     with database.transaction() as connection:
-        connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 2")
         connection.execute("DROP TABLE chat_requests")
+        connection.execute("DROP TABLE auth_sessions")
 
     def fail_migration(connection, applied_at) -> None:
         del applied_at
