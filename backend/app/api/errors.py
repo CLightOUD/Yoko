@@ -17,6 +17,7 @@ from backend.app.services import (
     InvalidCredentialsError,
     InvalidRequestError,
     ModelUnavailableError,
+    OriginNotAllowedError,
     ResourceConflictError,
     ResourceNotFoundError,
     ServiceError,
@@ -31,6 +32,7 @@ logger = logging.getLogger("yoko.errors")
 
 ERROR_DESCRIPTIONS = {
     401: "需要登录或登录凭据无效",
+    403: "请求来源不受信任",
     400: "业务参数无效",
     404: "资源不存在",
     409: "资源状态冲突",
@@ -105,6 +107,7 @@ def install_error_handlers(app: FastAPI) -> None:
             AuthenticationUnavailableError: (503, "AUTHENTICATION_UNAVAILABLE"),
             InvalidCredentialsError: (401, "INVALID_CREDENTIALS"),
             InvalidRequestError: (400, "INVALID_REQUEST"),
+            OriginNotAllowedError: (403, "ORIGIN_NOT_ALLOWED"),
             ResourceNotFoundError: (404, "RESOURCE_NOT_FOUND"),
             ResourceConflictError: (409, "RESOURCE_CONFLICT"),
             ModelUnavailableError: (502, "MODEL_UNAVAILABLE"),
@@ -128,6 +131,7 @@ def install_error_handlers(app: FastAPI) -> None:
             AuthenticationUnavailableError: "认证服务尚未完成接入",
             InvalidCredentialsError: "用户名或密码错误",
             ModelUnavailableError: "模型服务暂不可用，请稍后重试",
+            OriginNotAllowedError: "请求来源不受信任",
             ToolExecutionError: "外部工具暂不可用，请稍后重试",
             DatabaseUnavailableError: "数据库暂不可用",
             TooManyAttemptsError: "登录失败次数过多，请稍后再试",

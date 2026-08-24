@@ -64,7 +64,7 @@ def create_app(
         app.state.chat_service = chat_service
         yield
 
-    application = FastAPI(title="Yoko API", version="0.3.0", lifespan=lifespan)
+    application = FastAPI(title="Yoko API", version="0.4.0", lifespan=lifespan)
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
     application.add_middleware(
         CORSMiddleware,

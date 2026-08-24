@@ -67,7 +67,7 @@ def test_readiness_reports_database_schema(client) -> None:
     assert response.json() == {
         "status": "ok",
         "database": "ok",
-        "schema_version": 2,
+        "schema_version": 3,
     }
 
 
@@ -184,7 +184,20 @@ def test_unconfigured_model_returns_documented_502(monkeypatch, tmp_path) -> Non
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     app = create_app(database=Database(tmp_path / "no-model.db"))
 
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with TestClient(
+        app,
+        raise_server_exceptions=False,
+        headers={"Origin": "http://127.0.0.1:5173"},
+    ) as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "no_model_user",
+                "password": "correct-horse-2026",
+                "display_name": "模型测试用户",
+            },
+        )
+        assert registered.status_code == 201
         response = client.post(
             "/api/chat",
             json={"user_id": "demo-user", "message": "你好"},

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 class APIModel(BaseModel):
@@ -17,12 +18,26 @@ class APIModel(BaseModel):
     )
 
 
+class SessionBoundAPIModel(APIModel):
+    """Public input that discards only the legacy client-supplied user ID."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_user_id(cls, value: Any) -> Any:
+        if "user_id" in cls.model_fields or not isinstance(value, Mapping):
+            return value
+        cleaned = dict(value)
+        cleaned.pop("user_id", None)
+        return cleaned
+
+
 UserId = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 ErrorCode = Literal[
     "AUTHENTICATION_REQUIRED",
     "AUTHENTICATION_UNAVAILABLE",
     "INVALID_CREDENTIALS",
     "INVALID_REQUEST",
+    "ORIGIN_NOT_ALLOWED",
     "RESOURCE_NOT_FOUND",
     "RESOURCE_CONFLICT",
     "TOO_MANY_ATTEMPTS",

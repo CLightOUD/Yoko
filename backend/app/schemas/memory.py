@@ -3,10 +3,16 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 from pydantic.experimental.missing_sentinel import MISSING
 
-from backend.app.schemas.common import APIModel, UserId
+from backend.app.schemas.common import APIModel, SessionBoundAPIModel, UserId
 
 
 MemoryScope = Literal["global", "task"]
@@ -54,12 +60,17 @@ class MemoryChange(APIModel):
         return self
 
 
-class MemoryListQuery(APIModel):
-    user_id: UserId
+class MemoryListParams(SessionBoundAPIModel):
     active: bool | None = True
     task_type: TaskType | None = None
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
+
+
+class MemoryListQuery(MemoryListParams):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId
 
 
 class MemoryListResponse(APIModel):
@@ -73,8 +84,7 @@ class MemoryListResponse(APIModel):
         return self
 
 
-class MemoryUpdateRequest(APIModel):
-    user_id: UserId
+class MemoryUpdateBody(SessionBoundAPIModel):
     memory_value: MemoryValue | MISSING = MISSING
     display_text: MemoryDisplayText | MISSING = MISSING
     active: bool | MISSING = MISSING
@@ -86,3 +96,9 @@ class MemoryUpdateRequest(APIModel):
         if not provided:
             raise ValueError("at least one memory field must be provided")
         return self
+
+
+class MemoryUpdateRequest(MemoryUpdateBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId

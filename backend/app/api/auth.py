@@ -6,7 +6,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from backend.app.api.dependencies import get_auth_service
+from backend.app.api.dependencies import (
+    get_auth_cookie_name,
+    get_auth_service,
+    require_trusted_origin,
+)
 from backend.app.api.errors import error_responses
 from backend.app.schemas import (
     AuthResponse,
@@ -28,14 +32,10 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _cookie_name() -> str:
-    return os.getenv("AUTH_COOKIE_NAME", "yoko_session")
-
-
 def _set_session_cookie(response: Response, issued: IssuedSession) -> None:
     expires_at = issued.response.session_expires_at.astimezone(UTC)
     max_age = max(0, int((expires_at - datetime.now(UTC)).total_seconds()))
-    cookie_name = _cookie_name()
+    cookie_name = get_auth_cookie_name()
     secure = _env_flag("AUTH_COOKIE_SECURE", default=False)
     if cookie_name.startswith("__Host-") and not secure:
         raise RuntimeError("__Host- cookies require AUTH_COOKIE_SECURE=true")
@@ -52,14 +52,15 @@ def _set_session_cookie(response: Response, issued: IssuedSession) -> None:
 
 
 def _session_token(request: Request) -> str | None:
-    return request.cookies.get(_cookie_name())
+    return request.cookies.get(get_auth_cookie_name())
 
 
 @router.post(
     "/register",
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=error_responses(409, 422, 429, 500, 503),
+    responses=error_responses(403, 409, 422, 500, 503),
+    dependencies=[Depends(require_trusted_origin)],
 )
 def register(
     request: RegisterRequest,
@@ -74,7 +75,8 @@ def register(
 @router.post(
     "/login",
     response_model=AuthResponse,
-    responses=error_responses(401, 422, 429, 500, 503),
+    responses=error_responses(401, 403, 422, 500, 503),
+    dependencies=[Depends(require_trusted_origin)],
 )
 def login(
     request: LoginRequest,
@@ -101,7 +103,8 @@ def current_user(
 @router.post(
     "/logout",
     response_model=LogoutResponse,
-    responses=error_responses(500, 503),
+    responses=error_responses(403, 500, 503),
+    dependencies=[Depends(require_trusted_origin)],
 )
 def logout(
     request: Request,
@@ -109,5 +112,5 @@ def logout(
     service: AuthServiceDependency,
 ) -> LogoutResponse:
     service.logout(_session_token(request))
-    response.delete_cookie(key=_cookie_name(), path="/")
+    response.delete_cookie(key=get_auth_cookie_name(), path="/")
     return LogoutResponse(logged_out=True)

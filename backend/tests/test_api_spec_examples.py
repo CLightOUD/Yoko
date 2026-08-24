@@ -36,24 +36,24 @@ def models_for_example(data: dict[str, Any]) -> tuple[type[BaseModel], ...]:
         return (schemas.MetricsSummaryResponse,)
     if "request_id" in keys and "conversation_id" in keys:
         return (schemas.ChatResponse,)
-    if "message" in keys and "user_id" in keys:
-        return (schemas.ChatRequest,)
+    if "message" in keys:
+        return (schemas.ChatRequestBody,)
     if "feedback_id" in keys:
         return (schemas.FeedbackResponse,)
     if "feedback_text" in keys or "corrected_reply" in keys or "rating" in keys:
-        return (schemas.FeedbackRequest,)
+        return (schemas.FeedbackRequestBody,)
     if "reminder" in keys and "already_acknowledged" in keys:
         return (schemas.ReminderAckResponse,)
-    if keys == {"user_id", "expected_trigger_at"}:
-        return (schemas.ReminderAckRequest,)
+    if keys == {"expected_trigger_at"}:
+        return (schemas.ReminderAckBody,)
     if keys == {"items", "total"}:
         return (schemas.ReminderListResponse, schemas.MemoryListResponse)
     if "memory_value" in keys and "id" not in keys:
-        return (schemas.MemoryUpdateRequest,)
+        return (schemas.MemoryUpdateBody,)
     if "next_trigger_at" in keys and "id" not in keys:
         if "status" in keys:
-            return (schemas.ReminderUpdateRequest,)
-        return (schemas.ReminderCreateRequest,)
+            return (schemas.ReminderUpdateBody,)
+        return (schemas.ReminderCreateBody,)
     if "next_trigger_at" in keys and "id" in keys:
         return (schemas.ReminderView,)
     if "memory_key" in keys:
@@ -77,7 +77,7 @@ def test_all_api_spec_json_examples_match_pydantic_models() -> None:
         models = models_for_example(data)
 
         if any(
-            model in {schemas.ReminderCreateRequest, schemas.ReminderUpdateRequest}
+            model in {schemas.ReminderCreateBody, schemas.ReminderUpdateBody}
             for model in models
         ):
             data["next_trigger_at"] = datetime.now(UTC) + timedelta(days=1)

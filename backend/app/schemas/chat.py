@@ -3,9 +3,21 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import Field, NonNegativeInt, StringConstraints, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
-from backend.app.schemas.common import APIModel, UserId, validate_timezone_name
+from backend.app.schemas.common import (
+    APIModel,
+    SessionBoundAPIModel,
+    UserId,
+    validate_timezone_name,
+)
 from backend.app.schemas.memory import MemoryChange, MemoryScope, TaskType
 
 
@@ -14,8 +26,7 @@ ToolStatus = Literal["success", "failed"]
 ChatMessage = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
 
 
-class ChatRequest(APIModel):
-    user_id: UserId
+class ChatRequestBody(SessionBoundAPIModel):
     conversation_id: UUID | None = None
     message: ChatMessage
     timezone: str | None = None
@@ -26,6 +37,12 @@ class ChatRequest(APIModel):
         if value is None:
             return value
         return validate_timezone_name(value)
+
+
+class ChatRequest(ChatRequestBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId
 
 
 class RetrievedMemory(APIModel):

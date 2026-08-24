@@ -22,6 +22,10 @@ class TooManyAttemptsError(ServiceError):
     pass
 
 
+class OriginNotAllowedError(ServiceError):
+    pass
+
+
 class InvalidRequestError(ServiceError):
     pass
 

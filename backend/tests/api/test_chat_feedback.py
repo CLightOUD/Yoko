@@ -298,8 +298,12 @@ def test_chat_finalization_rolls_back_and_can_retry(client, monkeypatch) -> None
 def test_pending_chat_conflicts_until_lease_expires_then_recovers(client) -> None:
     payload = {"user_id": "demo-user", "message": "租约恢复测试"}
     key = "chat-request-0005"
+    internal_payload = {
+        **payload,
+        "user_id": client.app.state.test_user_id,
+    }
     execution = client.app.state.chat_service._begin(
-        ChatRequest.model_validate(payload),
+        ChatRequest.model_validate(internal_payload),
         idempotency_key=key,
     )
 

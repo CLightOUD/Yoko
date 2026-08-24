@@ -1,6 +1,11 @@
-from fastapi import Request
+import os
+from typing import Annotated
+
+from fastapi import Depends, Request
 
 from backend.app.database import Database
+from backend.app.schemas import UserView
+from backend.app.services import OriginNotAllowedError
 from backend.app.services.auth_service import AuthService
 from backend.app.services import MemoryService, MetricsService, ReminderService
 from backend.app.services.chat_service import ChatService
@@ -13,6 +18,31 @@ def get_database(request: Request) -> Database:
 
 def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
+
+
+def get_auth_cookie_name() -> str:
+    return os.getenv("AUTH_COOKIE_NAME", "yoko_session")
+
+
+def get_current_user(
+    request: Request,
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> UserView:
+    session_token = request.cookies.get(get_auth_cookie_name())
+    return service.resolve_session(session_token).user
+
+
+def require_trusted_origin(request: Request) -> None:
+    origin = request.headers.get("Origin")
+    configured_origin = os.getenv(
+        "FRONTEND_ORIGIN", "http://127.0.0.1:5173"
+    ).rstrip("/")
+    request_origin = f"{request.url.scheme}://{request.url.netloc}".rstrip("/")
+    if origin is None or origin.rstrip("/") not in {
+        configured_origin,
+        request_origin,
+    }:
+        raise OriginNotAllowedError("请求来源不受信任")
 
 
 def get_reminder_service(request: Request) -> ReminderService:

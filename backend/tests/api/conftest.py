@@ -100,5 +100,20 @@ def api_app(tmp_path: Path) -> FastAPI:
 
 @pytest.fixture
 def client(api_app: FastAPI):
-    with TestClient(api_app, raise_server_exceptions=False) as active_client:
+    with TestClient(
+        api_app,
+        raise_server_exceptions=False,
+        headers={"Origin": "http://127.0.0.1:5173"},
+    ) as active_client:
+        registered = active_client.post(
+            "/api/auth/register",
+            json={
+                "username": "api_test_user",
+                "password": "correct-horse-2026",
+                "display_name": "接口测试用户",
+                "timezone": "Asia/Shanghai",
+            },
+        )
+        assert registered.status_code == 201
+        api_app.state.test_user_id = registered.json()["user"]["id"]
         yield active_client

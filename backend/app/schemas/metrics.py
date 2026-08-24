@@ -9,17 +9,16 @@ from pydantic import (
     model_validator,
 )
 
-from backend.app.schemas.common import APIModel, UserId
+from backend.app.schemas.common import APIModel, SessionBoundAPIModel, UserId
 
 
-class MetricsSummaryQuery(APIModel):
+class MetricsSummaryParams(SessionBoundAPIModel):
     model_config = ConfigDict(
         extra="forbid",
         populate_by_name=True,
         str_strip_whitespace=True,
     )
 
-    user_id: UserId
     from_: AwareDatetime | None = Field(default=None, alias="from")
     to: AwareDatetime | None = None
 
@@ -28,6 +27,16 @@ class MetricsSummaryQuery(APIModel):
         if self.from_ is not None and self.to is not None and self.to < self.from_:
             raise ValueError("to cannot be earlier than from")
         return self
+
+
+class MetricsSummaryQuery(MetricsSummaryParams):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        str_strip_whitespace=True,
+    )
+
+    user_id: UserId
 
 
 class MetricsSummaryResponse(APIModel):

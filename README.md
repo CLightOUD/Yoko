@@ -38,11 +38,12 @@ memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
 the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
 credentials; the other endpoints can run without an LLM key.
 
-Account API contracts are frozen in version `0.3.0`. During stage one,
-`/api/auth/register`, `/api/auth/login`, `/api/auth/me`, and `/api/auth/logout`
-are explicit `503 AUTHENTICATION_UNAVAILABLE` scaffolds: they do not create a
-user or issue a cookie. Existing business endpoints remain compatible with the
-current frontend until the real `AuthService` and V3 migration are integrated.
+Account authentication is active in API contract version `0.4.0`. Registration
+and login issue a fixed 180-day HttpOnly session cookie backed by the V3 SQLite
+schema. Chat, feedback, reminder, memory, and metrics endpoints require that
+session and derive ownership on the server; a client-supplied `user_id` is
+ignored during the temporary frontend transition. State-changing requests also
+require the configured frontend origin or the API's own origin.
 
 `GET /api/health` is the process liveness check and `GET /api/ready` verifies
 the database and migration version. Chat clients may send an `Idempotency-Key`
@@ -96,7 +97,7 @@ The local `.env` file has been created with empty model credentials. Fill in
 `MODEL_NAME`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL` when required. Never
 commit `.env`.
 
-Stage-one authentication defaults are:
+Authentication defaults are:
 
 ```text
 SESSION_TTL_DAYS=180
@@ -105,8 +106,7 @@ AUTH_COOKIE_NAME=yoko_session
 ```
 
 Production HTTPS must use `AUTH_COOKIE_SECURE=true` and the
-`__Host-yoko_session` cookie name after the real authentication service is
-integrated.
+`__Host-yoko_session` cookie name.
 
 ---
 
@@ -149,10 +149,10 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 `API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
 凭据，其他接口不依赖大模型密钥即可运行。
 
-账号接口合同已冻结为 `0.3.0`。阶段一中的 `/api/auth/register`、
-`/api/auth/login`、`/api/auth/me` 和 `/api/auth/logout` 是显式返回
-`503 AUTHENTICATION_UNAVAILABLE` 的骨架，不会创建用户或签发 Cookie。
-在真实 `AuthService` 和 V3 数据迁移合入前，现有业务接口继续兼容当前前端。
+账号认证已在接口合同 `0.4.0` 中启用。注册和登录使用 V3 SQLite 数据结构签发
+固定 180 天的 HttpOnly Session Cookie。聊天、反馈、提醒、记忆和指标接口都要求
+有效 Session，资源归属由后端确定；前端过渡期间多传的 `user_id` 会被忽略。
+所有写请求还必须来自配置的前端 Origin 或 API 同源页面。
 
 `GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接和迁移版本。
 聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
@@ -213,7 +213,7 @@ npm.cmd run dev
 本地 `.env` 文件由 `.env.example` 创建，模型凭据默认为空。需要调用模型时，
 请填写 `MODEL_NAME`、`OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要提交 `.env`。
 
-阶段一认证配置默认值：
+认证配置默认值：
 
 ```text
 SESSION_TTL_DAYS=180
@@ -221,5 +221,5 @@ AUTH_COOKIE_SECURE=false
 AUTH_COOKIE_NAME=yoko_session
 ```
 
-真实认证服务接入后，生产 HTTPS 环境必须使用 `AUTH_COOKIE_SECURE=true` 和
+生产 HTTPS 环境必须使用 `AUTH_COOKIE_SECURE=true` 和
 `__Host-yoko_session` Cookie 名称。

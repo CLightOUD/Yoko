@@ -4,10 +4,22 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic.experimental.missing_sentinel import MISSING
 
-from backend.app.schemas.common import APIModel, UserId, validate_timezone_name
+from backend.app.schemas.common import (
+    APIModel,
+    SessionBoundAPIModel,
+    UserId,
+    validate_timezone_name,
+)
 
 
 RepeatType = Literal["none", "daily", "weekly"]
@@ -41,8 +53,7 @@ class ReminderView(APIModel):
         return validate_timezone_name(value)
 
 
-class ReminderCreateRequest(APIModel):
-    user_id: UserId
+class ReminderCreateBody(SessionBoundAPIModel):
     title: ReminderInputTitle
     next_trigger_at: AwareDatetime
     timezone: str = "Asia/Shanghai"
@@ -59,8 +70,13 @@ class ReminderCreateRequest(APIModel):
         return validate_timezone_name(value)
 
 
-class ReminderUpdateRequest(APIModel):
+class ReminderCreateRequest(ReminderCreateBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     user_id: UserId
+
+
+class ReminderUpdateBody(SessionBoundAPIModel):
     title: ReminderInputTitle | MISSING = MISSING
     next_trigger_at: AwareDatetime | MISSING = MISSING
     timezone: str | MISSING = MISSING
@@ -94,16 +110,32 @@ class ReminderUpdateRequest(APIModel):
         return self
 
 
-class ReminderListQuery(APIModel):
+class ReminderUpdateRequest(ReminderUpdateBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     user_id: UserId
+
+
+class ReminderListParams(SessionBoundAPIModel):
     status: ReminderListStatus = "active"
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
 
-class DueReminderQuery(APIModel):
+class ReminderListQuery(ReminderListParams):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     user_id: UserId
+
+
+class DueReminderParams(SessionBoundAPIModel):
     limit: int = Field(default=20, ge=1, le=50)
+
+
+class DueReminderQuery(DueReminderParams):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId
 
 
 class ReminderListResponse(APIModel):
@@ -117,9 +149,14 @@ class ReminderListResponse(APIModel):
         return self
 
 
-class ReminderAckRequest(APIModel):
-    user_id: UserId
+class ReminderAckBody(SessionBoundAPIModel):
     expected_trigger_at: AwareDatetime
+
+
+class ReminderAckRequest(ReminderAckBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId
 
 
 class ReminderAckResponse(APIModel):

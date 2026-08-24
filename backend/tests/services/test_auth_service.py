@@ -10,7 +10,6 @@ from backend.app.services import (
     AuthenticationRequiredError,
     AuthService,
     InvalidCredentialsError,
-    TooManyAttemptsError,
     UsernameAlreadyExistsError,
 )
 
@@ -96,10 +95,17 @@ def test_invalid_credentials_are_generic_and_login_limit_resets_after_success(
     for _ in range(3):
         with pytest.raises(InvalidCredentialsError):
             service.login(wrong)
-    with pytest.raises(TooManyAttemptsError):
+    with pytest.raises(InvalidCredentialsError):
         service.login(wrong)
-    with pytest.raises(TooManyAttemptsError):
+    with pytest.raises(InvalidCredentialsError):
         service.login(LoginRequest(username="alice_01", password=PASSWORD))
+
+    for _ in range(5):
+        with pytest.raises(InvalidCredentialsError) as missing_again:
+            service.login(
+                LoginRequest(username="missing", password="wrong-password-2026")
+            )
+        assert str(missing_again.value) == "用户名或密码错误"
 
     after_block = now + timedelta(minutes=15)
     monkeypatch.setattr(

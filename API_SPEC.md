@@ -1,7 +1,7 @@
 # Yoko API 接口规范
 
-- 版本：`0.3.0`
-- 状态：账号系统阶段一合同；认证路由为显式 `503` 骨架
+- 版本：`0.4.0`
+- 状态：账号认证和业务接口 Session 隔离已接入
 适用范围：适老陪伴、提醒、反馈记忆与效果评估
 
 ## 快速导航
@@ -50,7 +50,7 @@ MVP 需要同时满足：
 
 MVP 使用前端每 20 至 30 秒轮询到期提醒。网页关闭后不能保证提醒触发，演示时必须明确说明。
 
-阶段一只冻结认证合同并注册路由骨架。`POST /api/auth/register`、`POST /api/auth/login`、`GET /api/auth/me` 和 `POST /api/auth/logout` 当前统一返回 `503 AUTHENTICATION_UNAVAILABLE`，不创建用户、不签发 Cookie，也不伪造成功响应。队员 A 实现 V3 迁移和 `AuthService` 后，再由队长启用真实认证并保护现有业务接口。
+账号认证已接入 V3 数据库和真实 `AuthService`。除健康检查、就绪检查、注册和登录外，所有业务接口都要求有效 Session；客户端提交的 `user_id` 不参与资源归属判断。
 
 ## 3. 通用约定
 
@@ -71,7 +71,7 @@ API prefix: /api
 - 耗时统一使用整数毫秒，字段后缀为 `_ms`。
 - Token 数使用非负整数；模型供应商未返回统计时允许为 `null`。
 - 列表接口统一返回 `items` 和 `total`。
-- 当前没有认证系统，`user_id` 由前端传入；所有读写仍必须按 `user_id` 隔离。
+- 用户身份由服务端 Session 确定，公开 Body 和 Query 不包含 `user_id`。
 - 响应模型中的字段固定返回，不允许后端因值为空而临时省略字段。
 - 列表没有数据时返回 `[]`，可空单值返回 `null`，不能用空字符串代替。
 - 成功响应直接返回对应模型，不额外包裹 `data`；错误响应统一使用 `ErrorResponse`。
@@ -101,6 +101,7 @@ API prefix: /api
 | `201` | 手动创建提醒成功 |
 | `400` | 已通过字段校验，但仍无法执行业务的参数错误 |
 | `401` | 未登录、Session 失效或用户名密码错误 |
+| `403` | 写请求缺少可信 `Origin` 或来源不受信任 |
 | `404` | 会话、提醒、记忆或请求不存在 |
 | `409` | 提醒已被修改、确认时间已失效或资源状态冲突 |
 | `422` | Pydantic 字段校验失败 |
@@ -129,6 +130,7 @@ AUTHENTICATION_REQUIRED
 AUTHENTICATION_UNAVAILABLE
 INVALID_CREDENTIALS
 INVALID_REQUEST
+ORIGIN_NOT_ALLOWED
 RESOURCE_NOT_FOUND
 RESOURCE_CONFLICT
 TOO_MANY_ATTEMPTS
@@ -152,10 +154,11 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 
 ### 3.5 用户与认证约定
 
-- 阶段一仍保留旧 `demo-user` 和现有业务请求中的 `user_id`，仅用于保持当前前后端可运行；这不是云端安全边界。
-- 账号功能完成后，注册是生产环境创建用户的唯一公开入口，查询和业务接口不得按任意 `user_id` 隐式创建用户。
-- 账号功能完成后，聊天、反馈、提醒、记忆和指标接口全部从服务端 Session 取得用户 ID，HTTP 请求不再信任客户端 `user_id`。
+- 旧 `demo-user` 只用于保留历史本地数据，没有公开密码，不能登录。
+- 注册是生产环境创建用户的唯一公开入口，查询和业务接口不得按任意 `user_id` 隐式创建用户。
+- 聊天、反馈、提醒、记忆和指标接口全部从服务端 Session 取得用户 ID，HTTP 请求不接受 `user_id`。过渡期间旧客户端多传该字段时会被忽略。
 - 未登录访问受保护接口返回 `401 AUTHENTICATION_REQUIRED`。
+- `POST`、`PATCH` 和 `DELETE` 请求必须携带可信 `Origin`；允许配置的 `FRONTEND_ORIGIN` 和当前 API 同源，其他来源返回 `403 ORIGIN_NOT_ALLOWED`。
 - Session 固定有效 180 天，普通业务请求不滑动续期；重新登录签发新的独立 Session。
 - 同一账号允许多个设备分别登录；退出只撤销当前 Session。
 - 原始 Session Token 只存于 `HttpOnly` Cookie，数据库只保存其 SHA-256 哈希。
@@ -170,22 +173,22 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | --- | --- |
 | `GET /api/health` | 通常无业务错误 |
 | `GET /api/ready` | `503 DATABASE_UNAVAILABLE` |
-| `POST /api/auth/register` | `409 USERNAME_ALREADY_EXISTS`、`422 INVALID_REQUEST`、`429 TOO_MANY_ATTEMPTS`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
-| `POST /api/auth/login` | `401 INVALID_CREDENTIALS`、`422 INVALID_REQUEST`、`429 TOO_MANY_ATTEMPTS`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
-| `GET /api/auth/me` | `401 AUTHENTICATION_REQUIRED`、阶段一 `503 AUTHENTICATION_UNAVAILABLE` |
-| `POST /api/auth/logout` | 阶段一 `503 AUTHENTICATION_UNAVAILABLE`；真实服务接入后幂等成功 |
-| `POST /api/chat` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
-| `POST /api/feedback` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `POST /api/reminders` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `GET /api/reminders` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `GET /api/reminders/due` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `PATCH /api/reminders/{id}` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
-| `DELETE /api/reminders/{id}` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `POST /api/reminders/{id}/ack` | `404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
-| `GET /api/memories` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `PATCH /api/memories/{id}` | `404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
-| `DELETE /api/memories/{id}` | `404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `GET /api/metrics/summary` | `400 INVALID_REQUEST`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `POST /api/auth/register` | `403 ORIGIN_NOT_ALLOWED`、`409 USERNAME_ALREADY_EXISTS`、`422 INVALID_REQUEST` |
+| `POST /api/auth/login` | `401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
+| `GET /api/auth/me` | `401 AUTHENTICATION_REQUIRED` |
+| `POST /api/auth/logout` | `403 ORIGIN_NOT_ALLOWED`；无有效 Session 时仍幂等成功 |
+| `POST /api/chat` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
+| `POST /api/feedback` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `POST /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `GET /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `GET /api/reminders/due` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `PATCH /api/reminders/{id}` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
+| `DELETE /api/reminders/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `POST /api/reminders/{id}/ack` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
+| `GET /api/memories` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `PATCH /api/memories/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
+| `DELETE /api/memories/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
+| `GET /api/metrics/summary` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 
 对重复反馈、重复删除和相同 `expected_trigger_at` 的重复确认，服务端返回原成功结果，不返回冲突错误。
 
@@ -199,18 +202,18 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `POST` | `/api/auth/login` | Body: `LoginRequest` | `200` | `AuthResponse` |
 | `GET` | `/api/auth/me` | Cookie: Session | `200` | `AuthResponse` |
 | `POST` | `/api/auth/logout` | Cookie: 可选 Session | `200` | `LogoutResponse` |
-| `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequest` | `200` | `ChatResponse` |
-| `POST` | `/api/feedback` | Body: `FeedbackRequest` | `200` | `FeedbackResponse` |
-| `POST` | `/api/reminders` | Body: `ReminderCreateRequest` | `201` | `ReminderView` |
-| `GET` | `/api/reminders` | Query: `ReminderListQuery` | `200` | `ReminderListResponse` |
-| `GET` | `/api/reminders/due` | Query: `DueReminderQuery` | `200` | `ReminderListResponse` |
-| `PATCH` | `/api/reminders/{id}` | Path: `id`; Body: `ReminderUpdateRequest` | `200` | `ReminderView` |
-| `DELETE` | `/api/reminders/{id}` | Path: `id`; Query: `user_id` | `200` | `DeleteResponse` |
-| `POST` | `/api/reminders/{id}/ack` | Path: `id`; Body: `ReminderAckRequest` | `200` | `ReminderAckResponse` |
-| `GET` | `/api/memories` | Query: `MemoryListQuery` | `200` | `MemoryListResponse` |
-| `PATCH` | `/api/memories/{id}` | Path: `id`; Body: `MemoryUpdateRequest` | `200` | `MemoryView` |
-| `DELETE` | `/api/memories/{id}` | Path: `id`; Query: `user_id` | `200` | `DeleteResponse` |
-| `GET` | `/api/metrics/summary` | Query: `MetricsSummaryQuery` | `200` | `MetricsSummaryResponse` |
+| `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequestBody` | `200` | `ChatResponse` |
+| `POST` | `/api/feedback` | Body: `FeedbackRequestBody` | `200` | `FeedbackResponse` |
+| `POST` | `/api/reminders` | Body: `ReminderCreateBody` | `201` | `ReminderView` |
+| `GET` | `/api/reminders` | Query: `ReminderListParams` | `200` | `ReminderListResponse` |
+| `GET` | `/api/reminders/due` | Query: `DueReminderParams` | `200` | `ReminderListResponse` |
+| `PATCH` | `/api/reminders/{id}` | Path: `id`; Body: `ReminderUpdateBody` | `200` | `ReminderView` |
+| `DELETE` | `/api/reminders/{id}` | Path: `id` | `200` | `DeleteResponse` |
+| `POST` | `/api/reminders/{id}/ack` | Path: `id`; Body: `ReminderAckBody` | `200` | `ReminderAckResponse` |
+| `GET` | `/api/memories` | Query: `MemoryListParams` | `200` | `MemoryListResponse` |
+| `PATCH` | `/api/memories/{id}` | Path: `id`; Body: `MemoryUpdateBody` | `200` | `MemoryView` |
+| `DELETE` | `/api/memories/{id}` | Path: `id` | `200` | `DeleteResponse` |
+| `GET` | `/api/metrics/summary` | Query: `MetricsSummaryParams` | `200` | `MetricsSummaryResponse` |
 
 表中的数据模型名称是前后端共同合同。字段调整必须先修改本文件，再同步 Pydantic 模型、前端类型和测试。
 
@@ -449,29 +452,28 @@ timezone: IANA timezone string
 - 输入：`RegisterRequest`。
 - 成功：`201 AuthResponse`，同时签发 Session Cookie。
 - 用户名已存在：`409 USERNAME_ALREADY_EXISTS`。
-- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`，不写数据库、不设置 Cookie。
+- 写请求必须携带可信 `Origin`。
 
 ##### `POST /api/auth/login`
 
 - 输入：`LoginRequest`。
 - 成功：`200 AuthResponse`，同时签发新的独立 Session Cookie。
-- 凭据错误：`401 INVALID_CREDENTIALS`。
-- 同一规范化用户名连续失败 5 次后暂停登录 15 分钟，返回 `429 TOO_MANY_ATTEMPTS`；成功登录清零失败状态。
-- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`，不设置 Cookie。
+- 用户名不存在、密码错误、账号禁用或账号处于临时锁定状态都返回相同的 `401 INVALID_CREDENTIALS`，不得据此判断账号是否存在。
+- 已存在账号连续失败 5 次后暂停登录 15 分钟；锁定期间仍返回通用 `401`，成功登录后清零失败状态。
+- 写请求必须携带可信 `Origin`。
 
 ##### `GET /api/auth/me`
 
 - 输入：Session Cookie。
 - 成功：`200 AuthResponse`。
 - Cookie 缺失、Session 不存在、过期或撤销：`401 AUTHENTICATION_REQUIRED`。
-- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`。
 
 ##### `POST /api/auth/logout`
 
 - 输入：可选 Session Cookie，无 JSON Body。
 - 成功：`200 LogoutResponse`，撤销当前 Session 并删除 Cookie。
 - 不因 Cookie 缺失或 Session 已失效返回 `401`。
-- 阶段一：固定返回 `503 AUTHENTICATION_UNAVAILABLE`。
+- 写请求必须携带可信 `Origin`。
 
 #### Session Cookie
 
@@ -489,7 +491,7 @@ Domain 不设置
 
 `15552000` 秒等于 180 天。若 Cookie 名以 `__Host-` 开头，必须同时满足 `Secure=true`、`Path=/` 和不设置 `Domain`。
 
-#### 阶段二内部 Service 合同
+#### 内部 Service 合同
 
 `backend/app/services/auth_service.py` 的公开方法签名冻结为：
 
@@ -508,7 +510,7 @@ IssuedSession
 
 `IssuedSession.token` 是只供路由设置 Cookie 的原始值，不得进入 Pydantic 响应、日志、异常消息或数据库。`AuthService` 的多表写操作必须使用数据库事务。
 
-#### 阶段二内部 Repository 合同
+#### 内部 Repository 合同
 
 队员 A 按以下语义实现，参数可以保持关键字参数和可选 `connection` 的现有风格：
 
@@ -600,7 +602,7 @@ revoked_at TEXT NULL
 
 ### `POST /api/chat`
 
-请求体数据模型（Pydantic）：`ChatRequest`
+公开请求体数据模型（Pydantic）：`ChatRequestBody`。服务端通过 Session 注入用户 ID 后再构造内部 `ChatRequest`。
 
 可选请求头：
 
@@ -610,7 +612,6 @@ revoked_at TEXT NULL
 
 ```json
 {
-  "user_id": "demo-user",
   "conversation_id": null,
   "message": "明天提醒我吃降压药",
   "timezone": "Asia/Shanghai"
@@ -621,7 +622,6 @@ revoked_at TEXT NULL
 
 | 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `conversation_id` | UUID 字符串或 `null` | 否 | `null` | 为空时创建新会话；非空时必须属于该用户 |
 | `message` | 字符串 | 是 | 无 | 去除首尾空格后长度为 1 至 2000 |
 | `timezone` | IANA 时区字符串或 `null` | 否 | `null` | 为空时读取用户设置，再回退到 `Asia/Shanghai` |
@@ -756,11 +756,10 @@ completed | needs_clarification | partial
 
 该接口用于点赞、点踩、编辑 Agent 结果等结构化反馈。用户在聊天框中直接表达的自然语言反馈仍发送到 `/api/chat`。
 
-请求体数据模型（Pydantic）：`FeedbackRequest`
+公开请求体数据模型（Pydantic）：`FeedbackRequestBody`。服务端通过 Session 注入用户 ID 后再构造内部 `FeedbackRequest`。
 
 ```json
 {
-  "user_id": "demo-user",
   "request_id": "64e7398e-811a-4b2c-b301-e46ad4d180ba",
   "feedback_text": "太晚了，以后服药都在晚上7点提醒",
   "corrected_reply": "已改为晚上7点提醒您服药。",
@@ -772,7 +771,6 @@ completed | needs_clarification | partial
 
 | 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `request_id` | UUID 字符串 | 是 | 无 | 必须对应同一用户的一次 `/api/chat` 请求 |
 | `feedback_text` | 字符串或 `null` | 否 | `null` | 非空时去除首尾空格，最长 2000 |
 | `corrected_reply` | 字符串或 `null` | 否 | `null` | 用户修正后的结果，最长 4000 |
@@ -857,11 +855,10 @@ FastAPI 注册路由时，应在动态路由 `/api/reminders/{id}` 之前注册�
 
 用于前端手动创建提醒；Agent 的创建、查询、修改和删除工具直接调用相同的 `ReminderService`，不通过 HTTP 回调自身。
 
-Path 参数：无。Query 参数：无。请求体数据模型（Pydantic）：`ReminderCreateRequest`。
+Path 参数：无。Query 参数：无。公开请求体数据模型（Pydantic）：`ReminderCreateBody`。
 
 ```json
 {
-  "user_id": "demo-user",
   "title": "服用降压药",
   "next_trigger_at": "2026-08-22T19:00:00+08:00",
   "timezone": "Asia/Shanghai",
@@ -871,7 +868,6 @@ Path 参数：无。Query 参数：无。请求体数据模型（Pydantic）：`
 
 | 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `title` | 字符串 | 是 | 无 | 去除首尾空格后长度为 1 至 200 |
 | `next_trigger_at` | ISO 8601 字符串 | 是 | 无 | 必须包含时区且晚于当前时间 |
 | `timezone` | IANA 时区字符串 | 否 | `Asia/Shanghai` | 必须与用户期望时区一致 |
@@ -894,11 +890,10 @@ Path 参数：无。Query 参数：无。请求体数据模型（Pydantic）：`
 
 ### `GET /api/reminders`
 
-Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`ReminderListQuery`。
+Path 参数：无。Body：无。公开查询参数数据模型（Pydantic）：`ReminderListParams`。
 
 | Query 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `status` | 枚举字符串 | 否 | `active` | `active`、`completed`、`deleted` 或查询专用值 `all` |
 | `limit` | 整数 | 否 | `50` | 1 至 100 |
 | `offset` | 整数 | 否 | `0` | 大于等于 0 |
@@ -918,11 +913,10 @@ Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`Remin
 
 ### `GET /api/reminders/due`
 
-Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`DueReminderQuery`。
+Path 参数：无。Body：无。公开查询参数数据模型（Pydantic）：`DueReminderParams`。
 
 | Query 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `limit` | 整数 | 否 | `20` | 1 至 50 |
 
 返回条件：
@@ -949,11 +943,10 @@ next_trigger_at <= 服务端当前时间
 
 ### `PATCH /api/reminders/{id}`
 
-Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（Pydantic）：`ReminderUpdateRequest`。
+Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模型（Pydantic）：`ReminderUpdateBody`。
 
 ```json
 {
-  "user_id": "demo-user",
   "title": "服用降压药",
   "next_trigger_at": "2026-08-22T18:30:00+08:00",
   "timezone": "Asia/Shanghai",
@@ -964,14 +957,13 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 
 | Body 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 用于资源归属校验，不能修改所属用户 |
 | `title` | 字符串 | 否 | 省略 | 提供时长度为 1 至 200；不可为 `null` |
 | `next_trigger_at` | ISO 8601 字符串 | 否 | 省略 | 提供时必须包含时区且晚于当前时间；不可为 `null` |
 | `timezone` | IANA 时区字符串 | 否 | 省略 | 提供时必须有效；不可为 `null` |
 | `repeat_type` | 枚举字符串 | 否 | 省略 | `none`、`daily` 或 `weekly`；不可为 `null` |
 | `status` | 枚举字符串 | 否 | 省略 | 仅允许 `active` 或 `completed`；删除使用 DELETE |
 
-除 `user_id` 外至少提供一个修改字段。JSON 中显式传入 `null` 不表示清空，应按无效参数返回 `422`；未修改字段应直接省略。
+至少提供一个修改字段。JSON 中显式传入 `null` 不表示清空，应按无效参数返回 `422`；未修改字段应直接省略。
 
 成功响应：`200 OK`，模型为更新后的 `ReminderView`。资源不存在或不属于该用户时返回 `404 RESOURCE_NOT_FOUND`。若修改后的日程和内容已被更强周期的提醒覆盖，当前弱提醒会被软删除，响应返回实际存活的提醒，因此响应中的 `id` 可能与 Path 参数不同，调用方应以响应 `id` 为准。
 
@@ -979,7 +971,7 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 
 ### `DELETE /api/reminders/{id}`
 
-Path 参数 `id` 为必填 UUID；Query 参数 `user_id` 为必填字符串；Body：无。
+Path 参数 `id` 为必填 UUID；Query 参数和 Body 均为空。资源归属由 Session 用户确定。
 
 执行软删除，将 `status` 设置为 `deleted`。
 
@@ -998,18 +990,16 @@ Path 参数 `id` 为必填 UUID；Query 参数 `user_id` 为必填字符串；Bo
 
 ### `POST /api/reminders/{id}/ack`
 
-Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（Pydantic）：`ReminderAckRequest`。
+Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模型（Pydantic）：`ReminderAckBody`。
 
 ```json
 {
-  "user_id": "demo-user",
   "expected_trigger_at": "2026-08-22T19:00:00+08:00"
 }
 ```
 
 | Body 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 用于资源归属校验 |
 | `expected_trigger_at` | ISO 8601 字符串 | 是 | 无 | 必须等于前端本次展示的触发时间 |
 
 `expected_trigger_at` 必须等于前端实际展示的 `next_trigger_at`：
@@ -1053,11 +1043,10 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 
 ### `GET /api/memories`
 
-Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`MemoryListQuery`。
+Path 参数：无。Body：无。公开查询参数数据模型（Pydantic）：`MemoryListParams`。
 
 | Query 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `active` | 布尔值或 `null` | 否 | `true` | 传 `false` 查询停用记忆；省略时只查有效记忆 |
 | `task_type` | 枚举字符串或 `null` | 否 | `null` | `global`、`medication`、`walking`、`appointment` 或 `other` |
 | `limit` | 整数 | 否 | `50` | 1 至 100 |
@@ -1078,11 +1067,10 @@ Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`Memor
 
 ### `PATCH /api/memories/{id}`
 
-Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（Pydantic）：`MemoryUpdateRequest`。
+Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模型（Pydantic）：`MemoryUpdateBody`。
 
 ```json
 {
-  "user_id": "demo-user",
   "memory_value": "18:30",
   "display_text": "服药提醒时间为晚上6点半",
   "active": true
@@ -1091,14 +1079,13 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 
 | Body 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 用于资源归属校验，不能修改所属用户 |
 | `memory_value` | 字符串 | 否 | 省略 | 提供时长度为 1 至 500；不可为 `null` |
 | `display_text` | 字符串 | 否 | 省略 | 提供时长度为 1 至 200；不可为 `null` |
 | `active` | 布尔值 | 否 | 省略 | 用于启用或停用记忆；不可为 `null` |
 
 规则：
 
-- 除 `user_id` 外全部为可选字段，但至少提供一个修改字段。
+- 全部字段均为可选，但至少提供一个修改字段。
 - 修改前后值必须写入 `memory_events`。
 - 修改不能产生两个相同 `task_type + memory_key` 的有效记忆。
 - 用户手动修改的值优先于模型推断值。
@@ -1112,7 +1099,7 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。请求体数据模型（P
 
 ### `DELETE /api/memories/{id}`
 
-Path 参数 `id` 为必填 UUID；Query 参数 `user_id` 为必填字符串；Body：无。
+Path 参数 `id` 为必填 UUID；Query 参数和 Body 均为空。资源归属由 Session 用户确定。
 
 执行软删除，即设置 `active=false` 并记录 `memory_events`。
 
@@ -1131,11 +1118,10 @@ Path 参数 `id` 为必填 UUID；Query 参数 `user_id` 为必填字符串；Bo
 
 ### `GET /api/metrics/summary`
 
-Path 参数：无。Body：无。查询参数数据模型（Pydantic）：`MetricsSummaryQuery`。
+Path 参数：无。Body：无。公开查询参数数据模型（Pydantic）：`MetricsSummaryParams`。
 
 | Query 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `user_id` | 字符串 | 是 | 无 | 1 至 64 个字符 |
 | `from` | ISO 8601 字符串或 `null` | 否 | 最早记录时间 | 必须包含时区 |
 | `to` | ISO 8601 字符串或 `null` | 否 | 服务端当前时间 | 必须包含时区且不早于 `from` |
 
@@ -1213,6 +1199,7 @@ auth.py
   LogoutResponse
 
 chat.py
+  ChatRequestBody
   ChatRequest
   ChatResponse
   RetrievedMemory
@@ -1220,6 +1207,7 @@ chat.py
   RequestMetrics
 
 feedback.py
+  FeedbackRequestBody
   FeedbackRequest
   FeedbackResponse
   FeedbackMetrics
@@ -1227,21 +1215,29 @@ feedback.py
 memory.py
   MemoryView
   MemoryChange
+  MemoryListParams
   MemoryListQuery
   MemoryListResponse
+  MemoryUpdateBody
   MemoryUpdateRequest
 
 reminder.py
+  ReminderCreateBody
   ReminderCreateRequest
+  ReminderUpdateBody
   ReminderUpdateRequest
+  ReminderAckBody
   ReminderAckRequest
   ReminderAckResponse
   ReminderView
+  ReminderListParams
   ReminderListQuery
+  DueReminderParams
   DueReminderQuery
   ReminderListResponse
 
 metrics.py
+  MetricsSummaryParams
   MetricsSummaryQuery
   MetricsSummaryResponse
 ```
@@ -1264,7 +1260,8 @@ metrics.py
 - 资源不存在和资源属于其他用户都返回 `404`，避免泄露其他用户数据。
 - 不在路由函数中直接写 SQL，也不在路由中拼接模型 Prompt。
 - 认证路由只通过 `AuthService` 读写账号和 Session；原始 Token 只用于设置或读取 Cookie。
-- 阶段一认证骨架必须明确返回 `503 AUTHENTICATION_UNAVAILABLE`，不得返回 Mock 用户或假 Cookie。
+- 受保护路由必须使用 `get_current_user`，公开输入不得决定资源所属用户。
+- 所有写路由必须使用 `require_trusted_origin`；跨用户资源统一按不存在处理。
 
 ### 13.2 Agent 层
 
@@ -1303,15 +1300,15 @@ metrics.py
 | 情况 | 接口行为 | 是否覆盖 |
 | --- | --- | --- |
 | 首次对话 | `conversation_id=null`，服务端创建会话 | 是 |
-| 阶段一认证路由 | 返回 `503 AUTHENTICATION_UNAVAILABLE`，不伪造成功 | 是 |
-| 注册新账号 | 创建用户、签发 180 天 Session，不返回密码 | 合入真实 AuthService 后验收 |
-| 重复用户名 | 大小写无关比较，返回 `409` | 合入真实 AuthService 后验收 |
-| 错误密码 | 返回统一 `401 INVALID_CREDENTIALS` | 合入真实 AuthService 后验收 |
-| 登录失败过多 | 第 5 次失败后暂停 15 分钟 | 合入真实 AuthService 后验收 |
-| 刷新恢复登录 | `/api/auth/me` 返回当前用户和到期时间 | 合入真实 AuthService 后验收 |
-| Session 过期 | 返回 `401`，要求重新登录 | 合入真实 AuthService 后验收 |
-| 重复退出 | 始终返回 `logged_out=true` | 合入真实 AuthService 后验收 |
-| 账号数据隔离 | 业务路由只采用 Session 用户 ID | 集成阶段验收 |
+| 注册新账号 | 创建用户、签发 180 天 Session，不返回密码 | 是 |
+| 重复用户名 | 大小写无关比较，返回 `409` | 是 |
+| 错误密码或锁定账号 | 统一返回 `401 INVALID_CREDENTIALS` | 是 |
+| 登录失败过多 | 第 5 次失败后暂停 15 分钟，外部响应不暴露账号状态 | 是 |
+| 刷新恢复登录 | `/api/auth/me` 返回当前用户和到期时间 | 是 |
+| Session 过期 | 返回 `401`，要求重新登录 | 是 |
+| 重复退出 | 始终返回 `logged_out=true` | 是 |
+| 账号数据隔离 | 业务路由只采用 Session 用户 ID | 是 |
+| 不可信写请求来源 | 返回 `403 ORIGIN_NOT_ALLOWED` | 是 |
 | 连续对话 | 校验会话属于当前 `user_id` | 是 |
 | 输入为空 | 返回 `422` 或统一 `400` | 是 |
 | 信息不足 | `status=needs_clarification`，不执行写操作，公共 `tool_calls=[]` | 是 |
@@ -1352,7 +1349,7 @@ metrics.py
 2. `FeedbackRequest`、`FeedbackResponse`。
 3. `MemoryView`、`ReminderView`、`RequestMetrics`。
 4. 统一错误响应。
-5. 认证 Schema、内部签名和显式 `503` 骨架。
+5. 认证 Schema、内部签名和真实 Session 接入。
 
 ### 第二批：完成主链路
 

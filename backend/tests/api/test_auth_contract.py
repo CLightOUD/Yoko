@@ -99,43 +99,82 @@ def test_password_hash_dependency_uses_argon2id() -> None:
     assert password_hash.verify("wrong-password", encoded) is False
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "payload"),
-    [
-        (
-            "post",
+def test_real_auth_routes_restore_and_revoke_session(client: TestClient) -> None:
+    current = client.get("/api/auth/me")
+    assert current.status_code == 200
+    assert current.json()["user"]["id"] == client.app.state.test_user_id
+
+    logged_out = client.post("/api/auth/logout")
+    assert logged_out.status_code == 200
+    assert logged_out.json() == {"logged_out": True}
+    assert client.get("/api/auth/me").status_code == 401
+
+    logged_in = client.post(
+        "/api/auth/login",
+        json={
+            "username": "api_test_user",
+            "password": "correct-horse-2026",
+        },
+    )
+    assert logged_in.status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+
+
+def test_locked_and_missing_accounts_return_the_same_login_error(
+    client: TestClient,
+) -> None:
+    client.post("/api/auth/logout")
+    errors = []
+    for _ in range(5):
+        response = client.post(
+            "/api/auth/login",
+            json={
+                "username": "api_test_user",
+                "password": "wrong-password-2026",
+            },
+        )
+        errors.append((response.status_code, response.json()["error"]))
+
+    blocked = client.post(
+        "/api/auth/login",
+        json={
+            "username": "api_test_user",
+            "password": "correct-horse-2026",
+        },
+    )
+    missing = client.post(
+        "/api/auth/login",
+        json={
+            "username": "missing_user",
+            "password": "wrong-password-2026",
+        },
+    )
+
+    expected = {
+        "code": "INVALID_CREDENTIALS",
+        "message": "用户名或密码错误",
+        "details": None,
+    }
+    assert errors == [(401, expected)] * 5
+    assert blocked.status_code == missing.status_code == 401
+    assert blocked.json()["error"] == missing.json()["error"] == expected
+
+
+def test_auth_write_rejects_untrusted_origin(tmp_path: Path) -> None:
+    app = create_app(database=Database(tmp_path / "origin.db"))
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
             "/api/auth/register",
-            {
+            headers={"Origin": "https://attacker.example"},
+            json={
                 "username": "alice_01",
                 "password": "correct-horse-2026",
                 "display_name": "李阿姨",
-                "timezone": "Asia/Shanghai",
             },
-        ),
-        (
-            "post",
-            "/api/auth/login",
-            {"username": "alice_01", "password": "correct-horse-2026"},
-        ),
-        ("get", "/api/auth/me", None),
-        ("post", "/api/auth/logout", None),
-    ],
-)
-def test_stage_one_auth_routes_fail_explicitly_without_side_effects(
-    client: TestClient,
-    method: str,
-    path: str,
-    payload: dict[str, str] | None,
-) -> None:
-    response = client.request(method, path, json=payload)
+        )
 
-    assert response.status_code == 503
-    assert response.json()["error"] == {
-        "code": "AUTHENTICATION_UNAVAILABLE",
-        "message": "认证服务尚未完成接入",
-        "details": None,
-    }
-    assert "set-cookie" not in response.headers
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "ORIGIN_NOT_ALLOWED"
 
 
 def test_auth_routes_set_secure_cookie_and_use_frozen_response_models(
@@ -150,7 +189,11 @@ def test_auth_routes_set_secure_cookie_and_use_frozen_response_models(
         auth_service=service,  # type: ignore[arg-type]
     )
 
-    with TestClient(app, base_url="https://testserver") as client:
+    with TestClient(
+        app,
+        base_url="https://testserver",
+        headers={"Origin": "https://testserver"},
+    ) as client:
         registered = client.post(
             "/api/auth/register",
             json={

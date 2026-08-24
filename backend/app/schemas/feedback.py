@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import NonNegativeInt, StringConstraints, model_validator
+from pydantic import ConfigDict, NonNegativeInt, StringConstraints, model_validator
 
-from backend.app.schemas.common import APIModel, UserId
+from backend.app.schemas.common import APIModel, SessionBoundAPIModel, UserId
 from backend.app.schemas.memory import MemoryChange
 
 
@@ -14,8 +14,7 @@ CorrectedReply = Annotated[str, StringConstraints(min_length=1, max_length=4000)
 FeedbackRating = Literal["up", "down"]
 
 
-class FeedbackRequest(APIModel):
-    user_id: UserId
+class FeedbackRequestBody(SessionBoundAPIModel):
     request_id: UUID
     feedback_text: FeedbackText | None = None
     corrected_reply: CorrectedReply | None = None
@@ -30,6 +29,12 @@ class FeedbackRequest(APIModel):
         ):
             raise ValueError("at least one feedback field must be provided")
         return self
+
+
+class FeedbackRequest(FeedbackRequestBody):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    user_id: UserId
 
 
 class FeedbackMetrics(APIModel):

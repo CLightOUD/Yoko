@@ -17,7 +17,6 @@ from backend.app.schemas.auth import UserView
 from backend.app.services.errors import (
     AuthenticationRequiredError,
     InvalidCredentialsError,
-    TooManyAttemptsError,
     UsernameAlreadyExistsError,
 )
 
@@ -86,16 +85,19 @@ class AuthService:
                 self._verify_password(password, self._dummy_password_hash)
                 failure = InvalidCredentialsError("用户名或密码错误")
             else:
+                password_matches = self._verify_password(
+                    password,
+                    user["password_hash"] or self._dummy_password_hash,
+                )
                 blocked_until = self._parse_datetime(user["login_blocked_until"])
                 if blocked_until is not None and now < blocked_until:
-                    failure = TooManyAttemptsError("登录失败次数过多，请稍后再试")
+                    failure = InvalidCredentialsError("用户名或密码错误")
                 else:
-                    password_matches = (
-                        not bool(user["disabled"])
-                        and user["password_hash"] is not None
-                        and self._verify_password(password, user["password_hash"])
-                    )
-                    if not password_matches:
+                    if (
+                        bool(user["disabled"])
+                        or user["password_hash"] is None
+                        or not password_matches
+                    ):
                         prior_failures = (
                             0
                             if blocked_until is not None and now >= blocked_until
@@ -115,13 +117,7 @@ class AuthService:
                             ),
                             connection=connection,
                         )
-                        failure = (
-                            TooManyAttemptsError(
-                                "登录失败次数过多，请稍后再试"
-                            )
-                            if next_block is not None
-                            else InvalidCredentialsError("用户名或密码错误")
-                        )
+                        failure = InvalidCredentialsError("用户名或密码错误")
                     else:
                         user = self.users.update_login_state(
                             user["id"],

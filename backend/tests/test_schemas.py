@@ -97,6 +97,14 @@ def test_chat_request_trims_text_and_rejects_extra_fields() -> None:
             unexpected=True,
         )
 
+    public = schemas.ChatRequestBody(
+        user_id="attacker-selected-user",
+        message="提醒我吃药",
+    )
+    assert "user_id" not in public.model_dump()
+    with pytest.raises(ValidationError):
+        schemas.ChatRequestBody(message="提醒我吃药", unexpected=True)
+
 
 def test_chat_request_rejects_invalid_timezone() -> None:
     with pytest.raises(ValidationError, match="valid IANA timezone"):
