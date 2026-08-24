@@ -32,20 +32,39 @@ class Scenario:
             database=Database(database_path),
             agent=LangChainAgent(),
         )
-        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self.client = TestClient(
+            self.app,
+            raise_server_exceptions=False,
+            headers={"Origin": "http://127.0.0.1:5173"},
+        )
         self.conversation_id: str | None = None
+        self.user_id: str | None = None
         self.responses: list[dict] = []
 
     def __enter__(self) -> Scenario:
         self.client.__enter__()
+        response = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "live_eval_user",
+                "password": "live-eval-password-2026",
+                "display_name": "实时评测用户",
+                "timezone": "Asia/Shanghai",
+            },
+        )
+        if response.status_code != 201:
+            raise AssertionError(f"评测账户注册失败: {response.json()}")
+        self.user_id = response.json()["user"]["id"]
         return self
 
     def __exit__(self, *args) -> None:
         self.client.__exit__(*args)
 
     def chat(self, message: str, *, same_conversation: bool = False) -> dict:
+        if self.user_id is None:
+            raise RuntimeError("Scenario must be entered before use")
         payload = {
-            "user_id": "demo-user",
+            "user_id": self.user_id,
             "message": message,
             "timezone": "Asia/Shanghai",
         }
@@ -60,16 +79,20 @@ class Scenario:
         return body
 
     def reminders(self) -> list[dict]:
+        if self.user_id is None:
+            raise RuntimeError("Scenario must be entered before use")
         response = self.client.get(
-            "/api/reminders", params={"user_id": "demo-user"}
+            "/api/reminders", params={"user_id": self.user_id}
         )
         if response.status_code != 200:
             raise AssertionError(f"提醒查询失败: {response.json()}")
         return response.json()["items"]
 
     def memories(self) -> list[dict]:
+        if self.user_id is None:
+            raise RuntimeError("Scenario must be entered before use")
         response = self.client.get(
-            "/api/memories", params={"user_id": "demo-user"}
+            "/api/memories", params={"user_id": self.user_id}
         )
         if response.status_code != 200:
             raise AssertionError(f"记忆查询失败: {response.json()}")

@@ -26,7 +26,15 @@ def _local(reminder: dict) -> datetime:
 def damaged_key_fields(scenario: Scenario) -> str:
     first = scenario.chat("下周3晚丄7典半提酲我去复诊")
     reminders = scenario.reminders()
-    _require(first["status"] == "completed", "关键字段错字仍应完成明确请求")
+    if first["status"] == "needs_clarification":
+        _require(not first["tool_calls"], "澄清前不得执行写操作")
+        _require(not reminders, "澄清前不得创建提醒")
+        first = scenario.chat(
+            "对，就是下周三晚上七点半，提醒我去复诊。",
+            same_conversation=True,
+        )
+        reminders = scenario.reminders()
+    _require(first["status"] == "completed", "确认明确语义后应完成请求")
     _require(len(reminders) == 1, "应创建且仅创建一条复诊提醒")
     local = _local(reminders[0])
     _require(local.weekday() == 2, "‘下周3’应理解为下周三")
@@ -45,7 +53,7 @@ def damaged_key_fields(scenario: Scenario) -> str:
     third = scenario.chat("对，就这个，别再建一遍。", same_conversation=True)
     _require(not third["tool_calls"], "用户明确要求不重复创建时不得调用工具")
     _require(len(scenario.reminders()) == 1, "确认对话后仍应只有一条提醒")
-    return "下周三 19:30，一次性，三轮后仍为1条"
+    return "严重错字最多澄清一次，最终为下周三19:30且未重复创建"
 
 
 def progressive_clarification(scenario: Scenario) -> str:
@@ -182,6 +190,25 @@ def medication_conflict_and_recovery(scenario: Scenario) -> str:
     return "拒绝两片，接受恢复医嘱后的一片每日20:00"
 
 
+def colloquial_intent_and_period_followup(scenario: Scenario) -> str:
+    first = scenario.chat("明天五点四十通知我吃药")
+    _require(first["status"] == "needs_clarification", "未说明上午下午时必须追问")
+    _require(not first["tool_calls"], "信息不完整时不得提前执行写操作")
+    _require(not scenario.reminders(), "追问阶段不得创建提醒")
+
+    second = scenario.chat("下午", same_conversation=True)
+    reminders = scenario.reminders()
+    _require(second["status"] == "completed", "补充下午后应完成原请求")
+    _require(len(reminders) == 1, "多轮补齐后只应创建一条提醒")
+    local = _local(reminders[0])
+    _require((local.hour, local.minute) == (17, 40), "中文五点四十应解析为17:40")
+
+    third = scenario.chat("是的", same_conversation=True)
+    _require(not third["tool_calls"], "已完成后的确认不得重复创建")
+    _require(len(scenario.reminders()) == 1, "确认后仍应只有一条提醒")
+    return "‘通知我’经下午补充后创建17:40，确认未重复创建"
+
+
 DIALOGUES: tuple[tuple[str, str, Callable[[Scenario], str]], ...] = (
     ("D01", "日期、钟点和动词关键字段同时受损，并连续确认", damaged_key_fields),
     ("D02", "三轮逐步补齐日期范围、到达时间与出门时间", progressive_clarification),
@@ -189,12 +216,14 @@ DIALOGUES: tuple[tuple[str, str, Callable[[Scenario], str]], ...] = (
     ("D04", "周期和钟点关键字段错写，随后只确认与复述", typo_weekly_and_readback),
     ("D05", "带关键错字的长期偏好、自动使用和本次覆盖", typo_memory_and_explicit_override),
     ("D06", "冲突用药要求被拒绝后恢复医生方案", medication_conflict_and_recovery),
+    ("D07", "无关键词白名单的口语意图、时段补充与确认", colloquial_intent_and_period_followup),
 )
 
 
 def main() -> int:
     LangChainAgent._build_model()
     results: list[EvaluationResult] = []
+    turns = 0
     with TemporaryDirectory(prefix="yoko-live-dialogue-") as directory:
         root = Path(directory)
         for case_id, description, evaluator in DIALOGUES:
@@ -206,6 +235,7 @@ def main() -> int:
                     detail = str(exc)
                     passed = False
                 calls, input_tokens, output_tokens, total_ms = _metrics(scenario)
+                turns += len(scenario.responses)
                 results.append(
                     EvaluationResult(
                         case_id=case_id,
@@ -222,7 +252,7 @@ def main() -> int:
     payload = {
         "passed": sum(result.passed for result in results),
         "total": len(results),
-        "turns": 15,
+        "turns": turns,
         "model_calls": sum(result.model_calls for result in results),
         "input_tokens": sum(result.input_tokens for result in results),
         "output_tokens": sum(result.output_tokens for result in results),
