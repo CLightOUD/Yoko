@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import os
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.app.agent import AgentRuntime, LangChainAgent
 from backend.app.api.auth import router as auth_router
@@ -29,6 +31,7 @@ from backend.app.services.feedback_service import FeedbackService
 
 load_dotenv()
 logger = logging.getLogger("yoko.http")
+DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 def create_app(
@@ -36,6 +39,7 @@ def create_app(
     database: Database | None = None,
     agent: AgentRuntime | None = None,
     auth_service: AuthService | None = None,
+    frontend_dist: Path | None = DEFAULT_FRONTEND_DIST,
 ) -> FastAPI:
     configure_logging()
 
@@ -106,6 +110,14 @@ def create_app(
     application.include_router(reminders_router)
     application.include_router(memories_router)
     application.include_router(metrics_router)
+
+    # Keep this mount last so API, OpenAPI, and documentation routes win first.
+    if frontend_dist is not None and (frontend_dist / "index.html").is_file():
+        application.mount(
+            "/",
+            StaticFiles(directory=frontend_dist, html=True),
+            name="frontend",
+        )
     return application
 
 
