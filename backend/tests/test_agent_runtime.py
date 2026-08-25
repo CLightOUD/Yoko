@@ -2198,7 +2198,7 @@ def test_semantic_safety_reply_overrides_model_confirmation(monkeypatch, tmp_pat
     assert reminders.list(ReminderListQuery(user_id="demo-user")).total == 0
 
 
-def test_model_creates_separate_one_time_plan_without_overwriting_recurring_reminder(
+def test_model_deduplicates_one_time_plan_covered_by_recurring_reminder(
     monkeypatch, tmp_path
 ) -> None:
     zone = ZoneInfo("Asia/Shanghai")
@@ -2263,13 +2263,8 @@ def test_model_creates_separate_one_time_plan_without_overwriting_recurring_remi
     active = reminders.list(ReminderListQuery(user_id="demo-user")).items
     assert result.status == "completed"
     assert [call.tool_name for call in result.tool_calls] == ["create_reminder"]
-    assert len(active) == 2
-    preserved = next(item for item in active if item.id == existing.id)
-    separate = next(item for item in active if item.id != existing.id)
-    assert preserved.next_trigger_at == daily_trigger
-    assert preserved.repeat_type == "daily"
-    assert separate.next_trigger_at == one_time_trigger
-    assert separate.repeat_type == "none"
+    assert active == [existing]
+    assert "没有重复创建" in result.reply
 
 
 def test_tool_layer_allows_at_most_one_write_per_request(monkeypatch, tmp_path) -> None:

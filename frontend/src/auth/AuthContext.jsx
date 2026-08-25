@@ -14,6 +14,7 @@ import {
   registerUser,
 } from '../api/client'
 import { AUTH_STATUS, ERROR_CODE } from '../api/constants'
+import { clearChatHistory } from '../chatStorage.js'
 import { AuthContext } from './useAuth'
 
 const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
@@ -160,9 +161,11 @@ export function AuthProvider({ children }) {
 
   // 注销账户：需再次输入密码确认；成功后回到登录页
   const removeAccount = useCallback(async ({ password }) => {
+    const deletedUserId = user?.id
     await deleteAccount({ password })
+    if (deletedUserId) clearChatHistory(deletedUserId)
     markUnauthenticated()
-  }, [markUnauthenticated])
+  }, [markUnauthenticated, user?.id])
 
   const value = useMemo(
     () => ({

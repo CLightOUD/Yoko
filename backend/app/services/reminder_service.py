@@ -46,12 +46,49 @@ class ReminderService:
     ) -> ReminderView:
         with self._write_transaction(connection) as connection:
             self._require_user(request.user_id, connection=connection)
+            active_reminders, _ = self.reminders.list(
+                user_id=request.user_id,
+                status="active",
+                limit=10_000,
+                connection=connection,
+            )
             time_matches = self.reminders.list_active_at_time(
                 user_id=request.user_id,
                 next_trigger_at=request.next_trigger_at,
                 timezone=request.timezone,
                 connection=connection,
             )
+            incompatible_at_same_time = [
+                match
+                for match in time_matches
+                if match["repeat_type"] != request.repeat_type
+                and not self._titles_equivalent(match["title"], request.title)
+            ]
+            if incompatible_at_same_time:
+                raise ResourceConflictError(
+                    "该时间已有不同周期的提醒，请换一个时间，避免同时触发"
+                )
+
+            for match in active_reminders:
+                if match in time_matches or not self._schedules_overlap(
+                    existing=match,
+                    requested_trigger=request.next_trigger_at,
+                    requested_timezone=request.timezone,
+                    requested_repeat=request.repeat_type,
+                ):
+                    continue
+                if self._titles_equivalent(match["title"], request.title) and (
+                    self._schedule_covers(
+                        existing=match,
+                        requested_trigger=request.next_trigger_at,
+                        requested_timezone=request.timezone,
+                        requested_repeat=request.repeat_type,
+                    )
+                ):
+                    return ReminderView.model_validate(match)
+                raise ResourceConflictError(
+                    "该时间会与现有周期提醒同时触发，请换一个时间"
+                )
             same_repeat = [
                 match
                 for match in time_matches
@@ -181,6 +218,52 @@ class ReminderService:
                     exclude_id=str(reminder_id),
                     connection=connection,
                 )
+                incompatible_at_same_time = [
+                    match
+                    for match in time_matches
+                    if match["repeat_type"] != resulting_repeat
+                    and not self._titles_equivalent(match["title"], resulting_title)
+                ]
+                if incompatible_at_same_time:
+                    raise ResourceConflictError(
+                        "该时间已有不同周期的提醒，请换一个时间，避免同时触发"
+                    )
+
+                active_reminders, _ = self.reminders.list(
+                    user_id=request.user_id,
+                    status="active",
+                    limit=10_000,
+                    connection=connection,
+                )
+                for match in active_reminders:
+                    if (
+                        match["id"] == str(reminder_id)
+                        or match in time_matches
+                        or not self._schedules_overlap(
+                            existing=match,
+                            requested_trigger=resulting_trigger,
+                            requested_timezone=resulting_timezone,
+                            requested_repeat=resulting_repeat,
+                        )
+                    ):
+                        continue
+                    if self._titles_equivalent(
+                        match["title"], resulting_title
+                    ) and self._schedule_covers(
+                        existing=match,
+                        requested_trigger=resulting_trigger,
+                        requested_timezone=resulting_timezone,
+                        requested_repeat=resulting_repeat,
+                    ):
+                        self.reminders.soft_delete(
+                            reminder_id=str(reminder_id),
+                            user_id=request.user_id,
+                            connection=connection,
+                        )
+                        return ReminderView.model_validate(match)
+                    raise ResourceConflictError(
+                        "该时间会与现有周期提醒同时触发，请换一个时间"
+                    )
                 same_repeat = [
                     match
                     for match in time_matches
@@ -502,6 +585,82 @@ class ReminderService:
     @staticmethod
     def _as_utc(value: datetime | str) -> datetime:
         return datetime.fromisoformat(normalize_datetime(value))
+
+    @classmethod
+    def _schedules_overlap(
+        cls,
+        *,
+        existing: dict,
+        requested_trigger: datetime | str,
+        requested_timezone: str,
+        requested_repeat: str,
+    ) -> bool:
+        existing_trigger = cls._as_utc(existing["next_trigger_at"])
+        requested = cls._as_utc(requested_trigger)
+        return cls._schedule_occurs_at(
+            start=existing_trigger,
+            repeat_type=existing["repeat_type"],
+            timezone=existing["timezone"],
+            target=requested,
+        ) or cls._schedule_occurs_at(
+            start=requested,
+            repeat_type=requested_repeat,
+            timezone=requested_timezone,
+            target=existing_trigger,
+        )
+
+    @classmethod
+    def _schedule_covers(
+        cls,
+        *,
+        existing: dict,
+        requested_trigger: datetime | str,
+        requested_timezone: str,
+        requested_repeat: str,
+    ) -> bool:
+        del requested_timezone
+        if cls.REPEAT_PRIORITY[existing["repeat_type"]] < cls.REPEAT_PRIORITY[
+            requested_repeat
+        ]:
+            return False
+        return cls._schedule_occurs_at(
+            start=cls._as_utc(existing["next_trigger_at"]),
+            repeat_type=existing["repeat_type"],
+            timezone=existing["timezone"],
+            target=cls._as_utc(requested_trigger),
+        )
+
+    @staticmethod
+    def _schedule_occurs_at(
+        *,
+        start: datetime,
+        repeat_type: str,
+        timezone: str,
+        target: datetime,
+    ) -> bool:
+        start_utc = start.astimezone(UTC)
+        target_utc = target.astimezone(UTC)
+        if repeat_type == "none":
+            return start_utc == target_utc
+        if target_utc < start_utc:
+            return False
+        zone = ZoneInfo(timezone)
+        local_start = start_utc.astimezone(zone)
+        local_target = target_utc.astimezone(zone)
+        if (
+            local_start.hour,
+            local_start.minute,
+            local_start.second,
+            local_start.microsecond,
+        ) != (
+            local_target.hour,
+            local_target.minute,
+            local_target.second,
+            local_target.microsecond,
+        ):
+            return False
+        days = (local_target.date() - local_start.date()).days
+        return days >= 0 and (repeat_type == "daily" or days % 7 == 0)
 
     @staticmethod
     def _next_local_occurrence(

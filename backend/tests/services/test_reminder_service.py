@@ -88,7 +88,9 @@ def test_create_deduplicates_and_merges_same_schedule(database: Database) -> Non
     assert listed.items == [merged]
 
 
-def test_same_time_with_different_repeat_types_is_not_merged(database: Database) -> None:
+def test_same_time_with_different_titles_and_repeat_types_is_rejected(
+    database: Database,
+) -> None:
     service = ReminderService(database)
     trigger = datetime.now(UTC) + timedelta(days=2)
 
@@ -100,23 +102,23 @@ def test_same_time_with_different_repeat_types_is_not_merged(database: Database)
             repeat_type="none",
         )
     )
-    weekly = service.create(
-        ReminderCreateRequest(
-            user_id="demo-user",
-            title="每周量血压",
-            next_trigger_at=trigger,
-            repeat_type="weekly",
+    with pytest.raises(ResourceConflictError):
+        service.create(
+            ReminderCreateRequest(
+                user_id="demo-user",
+                title="每周量血压",
+                next_trigger_at=trigger,
+                repeat_type="weekly",
+            )
         )
-    )
 
-    assert one_time.id != weekly.id
-    assert service.list(ReminderListQuery(user_id="demo-user")).total == 2
+    assert service.list(ReminderListQuery(user_id="demo-user")).items == [one_time]
 
 
 def test_recurring_reminder_covers_same_one_time_reminder(database: Database) -> None:
     service = ReminderService(database)
     first_trigger = datetime.now(UTC) + timedelta(days=2)
-    second_trigger = first_trigger + timedelta(days=1)
+    second_trigger = first_trigger + timedelta(days=1, hours=1)
 
     one_time = service.create(
         ReminderCreateRequest(
@@ -159,6 +161,64 @@ def test_recurring_reminder_covers_same_one_time_reminder(database: Database) ->
     assert listed.total == 2
 
 
+def test_recurring_reminder_covers_equivalent_future_one_time_reminder(
+    database: Database,
+) -> None:
+    service = ReminderService(database)
+    first_trigger = datetime.now(UTC) + timedelta(days=2)
+    daily = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="服用降压药",
+            next_trigger_at=first_trigger,
+            timezone="Asia/Shanghai",
+            repeat_type="daily",
+        )
+    )
+
+    covered = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="吃降压药",
+            next_trigger_at=first_trigger + timedelta(days=3),
+            timezone="Asia/Shanghai",
+            repeat_type="none",
+        )
+    )
+
+    assert covered.id == daily.id
+    assert service.list(ReminderListQuery(user_id="demo-user")).items == [daily]
+
+
+def test_different_content_cannot_overlap_a_future_recurring_occurrence(
+    database: Database,
+) -> None:
+    service = ReminderService(database)
+    first_trigger = datetime.now(UTC) + timedelta(days=2)
+    daily = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="服用降压药",
+            next_trigger_at=first_trigger,
+            timezone="Asia/Shanghai",
+            repeat_type="daily",
+        )
+    )
+
+    with pytest.raises(ResourceConflictError):
+        service.create(
+            ReminderCreateRequest(
+                user_id="demo-user",
+                title="去买菜",
+                next_trigger_at=first_trigger + timedelta(days=1),
+                timezone="Asia/Shanghai",
+                repeat_type="none",
+            )
+        )
+
+    assert service.list(ReminderListQuery(user_id="demo-user")).items == [daily]
+
+
 def test_update_into_existing_schedule_merges_and_keeps_updated_id(
     database: Database,
 ) -> None:
@@ -196,6 +256,42 @@ def test_update_into_existing_schedule_merges_and_keeps_updated_id(
     )
     assert deleted.total == 1
     assert deleted.items[0].id == existing.id
+
+
+def test_update_cannot_overlap_a_different_recurring_reminder(
+    database: Database,
+) -> None:
+    service = ReminderService(database)
+    first_trigger = datetime.now(UTC) + timedelta(days=2)
+    daily = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="服用降压药",
+            next_trigger_at=first_trigger,
+            repeat_type="daily",
+        )
+    )
+    groceries = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="去买菜",
+            next_trigger_at=first_trigger + timedelta(hours=1),
+            repeat_type="none",
+        )
+    )
+
+    with pytest.raises(ResourceConflictError):
+        service.update(
+            groceries.id,
+            ReminderUpdateRequest(
+                user_id="demo-user",
+                next_trigger_at=first_trigger + timedelta(days=1),
+            ),
+        )
+
+    active = service.list(ReminderListQuery(user_id="demo-user"))
+    assert active.total == 2
+    assert {item.id for item in active.items} == {daily.id, groceries.id}
 
 
 def test_update_into_stronger_schedule_returns_survivor_without_duplicate(
@@ -569,16 +665,17 @@ def test_synonym_rules_do_not_merge_different_medications(
             repeat_type="daily",
         )
     )
-    service.create(
-        ReminderCreateRequest(
-            user_id="demo-user",
-            title="服用感冒药",
-            next_trigger_at=trigger_at,
-            timezone="Asia/Shanghai",
-            repeat_type="none",
+    with pytest.raises(ResourceConflictError):
+        service.create(
+            ReminderCreateRequest(
+                user_id="demo-user",
+                title="服用感冒药",
+                next_trigger_at=trigger_at,
+                timezone="Asia/Shanghai",
+                repeat_type="none",
+            )
         )
-    )
 
     active = service.list(ReminderListQuery(user_id="demo-user"))
-    assert active.total == 2
-    assert {item.title for item in active.items} == {"吃降压药", "服用感冒药"}
+    assert active.total == 1
+    assert active.items[0].title == "吃降压药"

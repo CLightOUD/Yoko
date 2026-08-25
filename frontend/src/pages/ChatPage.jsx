@@ -20,94 +20,22 @@ import {
   FEEDBACK_RATING,
   MEMORY_ACTION_LABEL,
   TASK_TYPE_LABEL,
+  TOOL_STATUS,
 } from '../api/constants'
 import { useAuth } from '../auth/useAuth'
+import { formatMs } from '../api/format.js'
+import {
+  MAX_CHAT_HISTORY,
+  archiveConversation,
+  clearChatHistory,
+  loadChatHistory,
+  saveChatHistory,
+} from '../chatStorage.js'
 
 let idCounter = 0
 function nextId() {
   idCounter += 1
   return `msg-${Date.now()}-${idCounter}`
-}
-
-// 本地持久化版本号；升级结构时递增并执行迁移
-const STORAGE_VERSION = 2
-const MAX_HISTORY = 300
-// localStorage 容量安全阈值（约 4.5MB，留出余地给其他站点数据）
-const STORAGE_SIZE_LIMIT = 4.5 * 1024 * 1024
-
-function buildStorageKey(userId) {
-  return `yoko.chat.v${STORAGE_VERSION}.${userId}`
-}
-
-function legacyStorageKey(userId) {
-  return `yoko.chat.${userId}`
-}
-
-// 从 localStorage 读取并做版本迁移
-function loadHistory(userId) {
-  const key = buildStorageKey(userId)
-  try {
-    const raw = localStorage.getItem(key)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      // 版本校验：结构对就直接用
-      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)) {
-        return {
-          messages: parsed.messages,
-          conversationId: parsed.conversationId ?? null,
-        }
-      }
-    }
-  } catch {
-    // 存储损坏时静默忽略，尝试迁移旧版本
-  }
-
-  // 尝试从旧版本迁移
-  try {
-    const oldKey = legacyStorageKey(userId)
-    const oldRaw = localStorage.getItem(oldKey)
-    if (oldRaw) {
-      const old = JSON.parse(oldRaw)
-      if (old && Array.isArray(old.messages)) {
-        const migrated = {
-          messages: old.messages.slice(-MAX_HISTORY),
-          conversationId: old.conversationId ?? null,
-        }
-        saveHistory(userId, migrated.messages, migrated.conversationId)
-        localStorage.removeItem(oldKey)
-        return migrated
-      }
-    }
-  } catch {
-    // 迁移失败也不中断体验
-  }
-
-  return { messages: [], conversationId: null }
-}
-
-function saveHistory(userId, messages, conversationId) {
-  const key = buildStorageKey(userId)
-  try {
-    const payload = JSON.stringify({ messages, conversationId })
-    // 简单容量保护：超出阈值时截断更早的消息再存
-    if (payload.length > STORAGE_SIZE_LIMIT && messages.length > 10) {
-      const trimmed = messages.slice(Math.floor(messages.length / 2))
-      saveHistory(userId, trimmed, conversationId)
-      return
-    }
-    localStorage.setItem(key, payload)
-  } catch {
-    // 存储已满或被禁用时静默忽略
-  }
-}
-
-function clearHistory(userId) {
-  const key = buildStorageKey(userId)
-  try {
-    localStorage.removeItem(key)
-  } catch {
-    // ignore
-  }
 }
 
 function exportChatHistory(userId, messages) {
@@ -316,6 +244,24 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
         </div>
       )}
 
+      {(msg.tools ?? []).length > 0 && (
+        <div className="chat-meta">
+          <span className="chat-meta-label">操作：</span>
+          {msg.tools.map((tool, index) => (
+            <span
+              key={`${tool.tool_name}-${index}`}
+              className={
+                tool.status === TOOL_STATUS.SUCCESS
+                  ? 'pill pill--green'
+                  : 'pill pill--red'
+              }
+            >
+              {tool.summary}
+            </span>
+          ))}
+        </div>
+      )}
+
       <SourceCitations sources={msg.sources} />
 
       {(msg.changes ?? []).length > 0 && (
@@ -330,12 +276,33 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
         </div>
       )}
 
+      {msg.metrics && (
+        <div className="chat-meta">
+          <span className="pill pill--gray">
+            耗时 {formatMs(msg.metrics.total_ms)}
+          </span>
+          <span className="pill pill--gray">
+            模型调用 {msg.metrics.model_call_count} 次
+          </span>
+          {msg.metrics.input_tokens != null && msg.metrics.output_tokens != null && (
+            <span className="pill pill--gray">
+              Token {msg.metrics.input_tokens} + {msg.metrics.output_tokens}
+            </span>
+          )}
+          {msg.metrics.memory_tokens > 0 && (
+            <span className="pill pill--gray">
+              记忆 Token {msg.metrics.memory_tokens}
+            </span>
+          )}
+        </div>
+      )}
+
       <FeedbackBar msg={msg} onSubmit={onFeedback} />
     </div>
   )
 }
 
-function HistoryPanel({ open, onClose, onSelect, storageKey, onNewChat, onClear, onExport, messages }) {
+function HistoryPanel({ open, onClose, onSelect, onNewChat, onClear, onExport, messages, busy }) {
   const [query, setQuery] = useState('')
 
   const all = useMemo(() => {
@@ -375,6 +342,7 @@ function HistoryPanel({ open, onClose, onSelect, storageKey, onNewChat, onClear,
             type="button"
             className="btn btn--secondary btn--small"
             onClick={onNewChat}
+            disabled={busy}
           >
             <Plus aria-hidden="true" />
             新对话
@@ -391,6 +359,7 @@ function HistoryPanel({ open, onClose, onSelect, storageKey, onNewChat, onClear,
             type="button"
             className="btn btn--danger btn--small"
             onClick={onClear}
+            disabled={busy}
           >
             <Trash2 aria-hidden="true" />
             清空本地
@@ -447,7 +416,7 @@ function HistoryPanel({ open, onClose, onSelect, storageKey, onNewChat, onClear,
 }
 
 // 根据错误状态码生成用户友好的提示和操作建议
-function getErrorDisplay(error, retryRequest) {
+function getErrorDisplay(error) {
   if (!error) return null
   const status = error?.status
   const code = error?.code
@@ -492,8 +461,10 @@ function getErrorDisplay(error, retryRequest) {
 export default function ChatPage() {
   const { user } = useAuth()
   const userId = user?.id ?? 'anonymous'
+  const timezone = user?.timezone ?? null
 
   const [messages, setMessages] = useState([])
+  const [archivedMessages, setArchivedMessages] = useState([])
   const [conversationId, setConversationId] = useState(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -509,17 +480,18 @@ export default function ChatPage() {
 
   // 惰性恢复上次会话
   useEffect(() => {
-    const stored = loadHistory(userId)
-    if (stored.messages?.length) setMessages(stored.messages)
-    if (stored.conversationId) setConversationId(stored.conversationId)
+    const stored = loadChatHistory(userId)
+    setMessages(stored.messages ?? [])
+    setArchivedMessages(stored.archivedMessages ?? [])
+    setConversationId(stored.conversationId ?? null)
   }, [userId])
 
   // 持久化到本地
   useEffect(() => {
-    if (messages.length || conversationId) {
-      saveHistory(userId, messages, conversationId)
+    if (messages.length || archivedMessages.length || conversationId) {
+      saveChatHistory(userId, { messages, archivedMessages, conversationId })
     }
-  }, [userId, messages, conversationId])
+  }, [userId, messages, archivedMessages, conversationId])
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -542,7 +514,7 @@ export default function ChatPage() {
     setError(null)
     if (appendUser) {
       setMessages((prev) => [
-        ...prev.slice(-MAX_HISTORY + 1),
+        ...prev.slice(-MAX_CHAT_HISTORY + 1),
         { id: nextId(), role: 'user', text: request.text, time: Date.now() },
       ])
     }
@@ -552,13 +524,13 @@ export default function ChatPage() {
       const res = await sendChat({
         conversation_id: request.conversationId,
         message: request.text,
-        timezone: user?.timezone ?? null,
+        timezone,
         idempotency_key: request.idempotencyKey,
       })
       setRetryRequest(null)
       setConversationId(res.conversation_id)
       setMessages((prev) => [
-        ...prev.slice(-MAX_HISTORY + 1),
+        ...prev.slice(-MAX_CHAT_HISTORY + 1),
         {
           id: nextId(),
           role: 'assistant',
@@ -566,6 +538,7 @@ export default function ChatPage() {
           time: Date.now(),
           status: res.status,
           memories: res.retrieved_memories,
+          tools: res.tool_calls,
           sources: res.sources,
           changes: res.memory_changes,
           metrics: res.metrics,
@@ -574,7 +547,7 @@ export default function ChatPage() {
         },
       ])
     } catch (err) {
-      const errInfo = getErrorDisplay(err, request)
+      const errInfo = getErrorDisplay(err)
       setError(errInfo)
       setRetryRequest(request)
       // 429 时启动倒计时
@@ -585,7 +558,7 @@ export default function ChatPage() {
       setLoading(false)
       abortRef.current = null
     }
-  }, [user?.timezone])
+  }, [timezone])
 
   function handleSend() {
     const text = input.trim()
@@ -632,8 +605,10 @@ export default function ChatPage() {
   }
 
   function handleNewChat() {
+    if (loading) return
     const confirmed = messages.length === 0 || window.confirm('开始新对话将清空当前对话视图（本地记录仍保留）。是否继续？')
     if (!confirmed) return
+    setArchivedMessages((prev) => archiveConversation(prev, messages))
     setMessages([])
     setConversationId(null)
     setError(null)
@@ -642,10 +617,12 @@ export default function ChatPage() {
   }
 
   function handleClearHistory() {
+    if (loading) return
     const confirmed = window.confirm('确定要清空本地所有聊天记录吗？此操作不可恢复。')
     if (!confirmed) return
-    clearHistory(userId)
+    clearChatHistory(userId)
     setMessages([])
+    setArchivedMessages([])
     setConversationId(null)
     setError(null)
     setRetryRequest(null)
@@ -653,7 +630,7 @@ export default function ChatPage() {
   }
 
   function handleExportHistory() {
-    exportChatHistory(userId, messages)
+    exportChatHistory(userId, [...archivedMessages, ...messages])
   }
 
   async function handleFeedback({ request_id, rating, feedback_text }) {
@@ -692,6 +669,7 @@ export default function ChatPage() {
           type="button"
           className="btn btn--secondary btn--small"
           onClick={handleNewChat}
+          disabled={loading}
           title="开始新的对话"
         >
           <Plus aria-hidden="true" />
@@ -799,7 +777,8 @@ export default function ChatPage() {
         onNewChat={handleNewChat}
         onClear={handleClearHistory}
         onExport={handleExportHistory}
-        messages={messages}
+        messages={[...archivedMessages, ...messages]}
+        busy={loading}
       />
     </div>
   )

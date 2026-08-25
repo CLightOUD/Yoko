@@ -32,7 +32,7 @@ from backend.app.schemas import (
     ToolCallView,
     WebSource,
 )
-from backend.app.services.errors import ModelUnavailableError
+from backend.app.services.errors import ModelUnavailableError, ResourceConflictError
 from backend.app.services.reminder_service import ReminderService
 from backend.app.services.web_search_service import WebSearchResult, WebSearchService
 
@@ -223,6 +223,24 @@ class PendingReminderMutation:
                 tool_ms=result.tool_ms + latency_ms,
                 pending_reminder_mutation=None,
             )
+        except ResourceConflictError as exc:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            latency_ms = max(0, round((perf_counter() - started) * 1000))
+            failed = ToolCallView(
+                tool_name=self.tool_name,
+                status="failed",
+                summary=str(exc)[:500],
+                latency_ms=latency_ms,
+            )
+            return replace(
+                result,
+                status="needs_clarification",
+                reply=f"{exc}。我先不改动现有提醒，您换个时间告诉我就行。",
+                tool_calls=[*result.tool_calls, failed],
+                tool_ms=result.tool_ms + latency_ms,
+                pending_reminder_mutation=None,
+            )
         except Exception:
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
@@ -255,9 +273,15 @@ class PendingReminderMutation:
             summary=summary[:500],
             latency_ms=latency_ms,
         )
+        reply = result.reply
+        if summary.startswith("已去重并保留现有提醒"):
+            reply = "这件事已经包含在现有提醒里，我没有重复创建。"
+        elif summary.startswith("已与现有提醒合并"):
+            reply = "同一时间已有提醒，我已经把两件事合并在一条提醒里。"
         return replace(
             result,
             status="completed",
+            reply=reply,
             tool_calls=[*result.tool_calls, completed],
             tool_ms=result.tool_ms + latency_ms,
             pending_reminder_mutation=None,

@@ -38,12 +38,17 @@ function CreateReminderForm({ onCreated, timezone }) {
       setError('请填写提醒内容和时间')
       return
     }
+    const nextTriggerAt = localToIso(triggerAt, timezone)
+    if (!nextTriggerAt) {
+      setError('这个时间在当前时区无效，请重新选择')
+      return
+    }
 
     setSubmitting(true)
     try {
       await createReminder({
         title: title.trim(),
-        next_trigger_at: localToIso(triggerAt, timezone),
+        next_trigger_at: nextTriggerAt,
         timezone,
         repeat_type: repeatType,
       })
@@ -125,7 +130,12 @@ function EditReminderForm({ reminder, onCancel, onSaved, timezone }) {
       setError('请填写提醒内容和时间')
       return
     }
-    if (new Date(localToIso(triggerAt, timezone)).getTime() <= Date.now()) {
+    const nextTriggerAt = localToIso(triggerAt, timezone)
+    if (!nextTriggerAt) {
+      setError('这个时间在当前时区无效，请重新选择')
+      return
+    }
+    if (new Date(nextTriggerAt).getTime() <= Date.now()) {
       setError('修改后的提醒时间需晚于当前时间')
       return
     }
@@ -134,7 +144,7 @@ function EditReminderForm({ reminder, onCancel, onSaved, timezone }) {
     try {
       await updateReminder(reminder.id, {
         title: title.trim(),
-        next_trigger_at: localToIso(triggerAt, timezone),
+        next_trigger_at: nextTriggerAt,
         timezone,
         repeat_type: repeatType,
       })
@@ -210,7 +220,6 @@ export default function RemindersPage() {
   const { user } = useAuth()
   const timezone = user?.timezone || DEFAULT_TIMEZONE
   const [items, setItems] = useState([])
-  const [total, setTotal] = useState(0)
   const [filter, setFilter] = useState(REMINDER_LIST_STATUS.ACTIVE)
   const [editingId, setEditingId] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -222,7 +231,6 @@ export default function RemindersPage() {
     try {
       const res = await listReminders({ status: filter })
       setItems(res.items)
-      setTotal(res.total)
     } catch (err) {
       setError(err.message || '加载提醒失败')
     } finally {

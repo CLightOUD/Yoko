@@ -1,4 +1,4 @@
-import { DEFAULT_TIMEZONE } from './constants'
+import { DEFAULT_TIMEZONE } from './constants.js'
 
 const WEEKDAYS = [
   '星期日',
@@ -26,7 +26,7 @@ function toZonedParts(iso, timezone = DEFAULT_TIMEZONE) {
       hour: '2-digit',
       minute: '2-digit',
       weekday: 'short',
-      hour12: false,
+      hourCycle: 'h23',
     })
     const parts = fmt.formatToParts(date)
     const get = (type) => parts.find((p) => p.type === type)?.value ?? ''
@@ -91,68 +91,89 @@ export function formatMs(ms) {
   return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} 秒`
 }
 
-// 把 <input type="datetime-local"> 的值（如 "2026-08-22T19:00"）转为后端要求的带时区 ISO 字符串。
-// 使用 Intl.DateTimeFormat 反推本地日期在指定时区下的 UTC 偏移，避免硬编码 +08:00。
+// 把 datetime-local 的墙上时间按指定 IANA 时区转换为 UTC ISO 字符串。
 export function localToIso(localDateTime, timezone = DEFAULT_TIMEZONE) {
   if (!localDateTime) return ''
-  // 先解析为本地时间的 Date（datetime-local 无时区，按本地时区解释）
-  const localDate = new Date(`${localDateTime}:00`)
-  if (Number.isNaN(localDate.getTime())) return ''
+  const match = localDateTime.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/,
+  )
+  if (!match) return ''
+
+  const desired = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+    second: Number(match[6] ?? 0),
+  }
+  const desiredUtc = Date.UTC(
+    desired.year,
+    desired.month - 1,
+    desired.day,
+    desired.hour,
+    desired.minute,
+    desired.second,
+  )
+  const normalized = new Date(desiredUtc)
+  if (
+    normalized.getUTCFullYear() !== desired.year ||
+    normalized.getUTCMonth() + 1 !== desired.month ||
+    normalized.getUTCDate() !== desired.day ||
+    normalized.getUTCHours() !== desired.hour ||
+    normalized.getUTCMinutes() !== desired.minute ||
+    normalized.getUTCSeconds() !== desired.second
+  ) {
+    return ''
+  }
 
   try {
-    // 找到该日期在目标时区下的 UTC 偏移
-    const fmt = new Intl.DateTimeFormat('en-US', {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
       timeZone: timezone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: false,
+      second: '2-digit',
+      hourCycle: 'h23',
     })
-    const parts = fmt.formatToParts(localDate)
-    const get = (type) => parts.find((p) => p.type === type)?.value ?? '0'
-
-    const zonedYear = parseInt(get('year'), 10)
-    const zonedMonth = parseInt(get('month'), 10)
-    const zonedDay = parseInt(get('day'), 10)
-    const zonedHour = parseInt(get('hour'), 10)
-    const zonedMinute = parseInt(get('minute'), 10)
-
-    // 构造目标时区下的"名义时间"对应的 UTC 时间
-    // 方法：用 UTC 时间构造，然后比较目标时区格式化结果与期望的差异
-    let utcDate = new Date(Date.UTC(zonedYear, zonedMonth - 1, zonedDay, zonedHour, zonedMinute, 0))
-
-    // 迭代校准：用当前猜测的 UTC 时间再格式化一次，如果与时区时间有偏差则调整
-    for (let i = 0; i < 3; i++) {
-      const checkParts = fmt.formatToParts(utcDate)
-      const getC = (type) => checkParts.find((p) => p.type === type)?.value ?? '0'
-      const h = parseInt(getC('hour'), 10)
-      const m = parseInt(getC('minute'), 10)
-      const diffMin = (zonedHour - h) * 60 + (zonedMinute - m)
-      if (Math.abs(diffMin) < 1) break
-      utcDate = new Date(utcDate.getTime() + diffMin * 60 * 1000)
+    const partsAt = (timestamp) => {
+      const parts = fmt.formatToParts(new Date(timestamp))
+      const get = (type) => Number(parts.find((part) => part.type === type)?.value)
+      return {
+        year: get('year'),
+        month: get('month'),
+        day: get('day'),
+        hour: get('hour'),
+        minute: get('minute'),
+        second: get('second'),
+      }
     }
 
-    // 计算与 UTC 的偏移（分钟）
-    const offsetMs = localDate.getTime() - utcDate.getTime()
-    const offsetMin = Math.round(offsetMs / 60000)
-    const sign = offsetMin >= 0 ? '+' : '-'
-    const absMin = Math.abs(offsetMin)
-    const offsetHours = Math.floor(absMin / 60)
-    const offsetMins = absMin % 60
-    const offsetStr = `${sign}${pad(offsetHours)}:${pad(offsetMins)}`
+    let candidate = desiredUtc
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const rendered = partsAt(candidate)
+      const renderedAsUtc = Date.UTC(
+        rendered.year,
+        rendered.month - 1,
+        rendered.day,
+        rendered.hour,
+        rendered.minute,
+        rendered.second,
+      )
+      const adjustment = desiredUtc - renderedAsUtc
+      if (adjustment === 0) break
+      candidate += adjustment
+    }
 
-    // 返回带偏移的 ISO 字符串：YYYY-MM-DDTHH:mm:ss+HH:mm
-    const year = zonedYear
-    const month = pad(zonedMonth)
-    const day = pad(zonedDay)
-    const hour = pad(zonedHour)
-    const minute = pad(zonedMinute)
-    return `${year}-${month}-${day}T${hour}:${minute}:00${offsetStr}`
+    const verified = partsAt(candidate)
+    if (Object.keys(desired).some((key) => verified[key] !== desired[key])) {
+      return ''
+    }
+    return new Date(candidate).toISOString()
   } catch {
-    // 回退：简单拼接 +08:00（兼容旧行为）
-    return `${localDateTime}:00+08:00`
+    return ''
   }
 }
 
