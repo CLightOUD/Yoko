@@ -125,6 +125,30 @@ class UserRepository(BaseRepository):
             raise LookupError(f"user does not exist: {user_id}")
         return dict(row)
 
+    def update_password(
+        self,
+        user_id: str,
+        *,
+        password_hash: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        with self._connection(connection, write=True) as active_connection:
+            active_connection.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, failed_login_count = 0,
+                    login_blocked_until = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (password_hash, utc_now_iso(), user_id),
+            )
+            row = active_connection.execute(
+                "SELECT * FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            raise LookupError(f"user does not exist: {user_id}")
+        return dict(row)
+
     def exists(
         self,
         user_id: str,

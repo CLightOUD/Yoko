@@ -66,7 +66,7 @@ def test_all_exported_models_generate_json_schema() -> None:
 def test_fixed_success_and_error_literals_are_enforced() -> None:
     assert schemas.HealthResponse(status="ok").status == "ok"
     assert schemas.ReadinessResponse(
-        status="ok", database="ok", schema_version=2
+        status="ok", database="ok", model="ok", schema_version=2
     ).schema_version == 2
     assert schemas.DeleteResponse(id=uuid4(), deleted=True).deleted is True
 
@@ -78,6 +78,24 @@ def test_fixed_success_and_error_literals_are_enforced() -> None:
 
     with pytest.raises(ValidationError):
         schemas.ErrorDetail(code="INVALID_REQUEST", message="缺少详情字段")
+
+
+def test_app_timezone_configures_request_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("APP_TIMEZONE", "Europe/London")
+
+    registered = schemas.RegisterRequest(
+        username="timezone_user",
+        password="correct-horse-2026",
+        display_name="时区用户",
+    )
+    reminder = schemas.ReminderCreateRequest(
+        user_id="demo-user",
+        title="散步",
+        next_trigger_at=datetime.now(UTC) + timedelta(days=1),
+    )
+
+    assert registered.timezone == "Europe/London"
+    assert reminder.timezone == "Europe/London"
 
 
 def test_chat_request_trims_text_and_rejects_extra_fields() -> None:

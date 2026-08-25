@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from backend.app.agent import AgentRuntime
+from backend.app.config import default_timezone
 from backend.app.database import Database
 from backend.app.repositories import (
     ChatRequestRepository,
@@ -61,6 +62,11 @@ class ChatService:
         self.chat_requests = ChatRequestRepository(database)
         self.messages = MessageRepository(database)
         self.users = UserRepository(database)
+
+    def check_model_readiness(self) -> None:
+        checker = getattr(self.agent, "check_readiness", None)
+        if checker is not None:
+            checker()
 
     def run(
         self,
@@ -209,7 +215,7 @@ class ChatService:
         )
         if history and history[0]["role"] == "assistant":
             history = history[1:]
-        timezone = request.timezone or user["timezone"] or "Asia/Shanghai"
+        timezone = request.timezone or user["timezone"] or default_timezone()
         local_now = datetime.now(UTC).astimezone(ZoneInfo(timezone))
         agent_result = self.agent.run(
             user_id=request.user_id,
@@ -219,6 +225,7 @@ class ChatService:
             memories=memories,
             history=history,
             reminder_service=self.reminder_service,
+            defer_mutations=True,
         )
 
         used_ids = set(agent_result.used_memory_ids)
@@ -232,24 +239,6 @@ class ChatService:
             )
             for memory in memories
         ]
-        minimum_total = retrieval_ms + agent_result.model_ms + agent_result.tool_ms
-        total_ms = max(
-            minimum_total,
-            round((perf_counter() - overall_started) * 1000),
-        )
-        metrics = RequestMetrics(
-            model_call_count=agent_result.model_call_count,
-            input_tokens=agent_result.input_tokens,
-            output_tokens=agent_result.output_tokens,
-            memory_tokens=agent_result.memory_tokens,
-            retrieved_memory_count=len(retrieved_memories),
-            used_memory_count=len(used_ids),
-            retrieval_ms=retrieval_ms,
-            model_ms=agent_result.model_ms,
-            tool_ms=agent_result.tool_ms,
-            total_ms=total_ms,
-        )
-
         with self.database.transaction(immediate=True) as connection:
             active = self.chat_requests.get_for_user(
                 request_id=str(execution.request_id),
@@ -258,6 +247,28 @@ class ChatService:
             )
             if active is None or active["status"] != "pending":
                 raise ResourceConflictError("聊天请求状态发生变化")
+            agent_result = agent_result.commit_reminder_mutation(
+                connection=connection
+            )
+            minimum_total = (
+                retrieval_ms + agent_result.model_ms + agent_result.tool_ms
+            )
+            total_ms = max(
+                minimum_total,
+                round((perf_counter() - overall_started) * 1000),
+            )
+            metrics = RequestMetrics(
+                model_call_count=agent_result.model_call_count,
+                input_tokens=agent_result.input_tokens,
+                output_tokens=agent_result.output_tokens,
+                memory_tokens=agent_result.memory_tokens,
+                retrieved_memory_count=len(retrieved_memories),
+                used_memory_count=len(used_ids),
+                retrieval_ms=retrieval_ms,
+                model_ms=agent_result.model_ms,
+                tool_ms=agent_result.tool_ms,
+                total_ms=total_ms,
+            )
             if used_ids:
                 self.memory_service.mark_used(
                     user_id=request.user_id,

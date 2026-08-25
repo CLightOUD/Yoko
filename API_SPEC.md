@@ -1,6 +1,6 @@
 # Yoko API 接口规范
 
-- 版本：`0.4.0`
+- 版本：`0.5.0`
 - 状态：账号认证和业务接口 Session 隔离已接入
 适用范围：适老陪伴、提醒、反馈记忆与效果评估
 
@@ -163,6 +163,8 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 - 同一账号允许多个设备分别登录；退出只撤销当前 Session。
 - 原始 Session Token 只存于 `HttpOnly` Cookie，数据库只保存其 SHA-256 哈希。
 - 密码只保存 Argon2id 哈希，不保存或记录明文。
+- 修改密码必须验证当前密码，并撤销该账号全部旧 Session 后签发一个新 Session；Session 固定时长保持不变。
+- 登录用户可以导出自己的业务数据，也可以在再次验证密码后删除账号及其全部关联数据。
 - `ChatRequest.timezone` 只影响本次自然语言时间解析，不自动修改用户资料。
 
 ### 3.6 接口错误矩阵
@@ -172,11 +174,14 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | 接口 | 可能的业务错误 |
 | --- | --- |
 | `GET /api/health` | 通常无业务错误 |
-| `GET /api/ready` | `503 DATABASE_UNAVAILABLE` |
+| `GET /api/ready` | `503 DATABASE_UNAVAILABLE`、`503 MODEL_UNAVAILABLE` |
 | `POST /api/auth/register` | `403 ORIGIN_NOT_ALLOWED`、`409 USERNAME_ALREADY_EXISTS`、`422 INVALID_REQUEST` |
 | `POST /api/auth/login` | `401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
 | `GET /api/auth/me` | `401 AUTHENTICATION_REQUIRED` |
 | `POST /api/auth/logout` | `403 ORIGIN_NOT_ALLOWED`；无有效 Session 时仍幂等成功 |
+| `POST /api/auth/password` | `400 INVALID_REQUEST`、`401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
+| `GET /api/account/export` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND` |
+| `DELETE /api/account` | `401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/chat` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
 | `POST /api/feedback` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -192,6 +197,8 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 
 对重复反馈、重复删除和相同 `expected_trigger_at` 的重复确认，服务端返回原成功结果，不返回冲突错误。
 
+除健康与就绪探针外，API 还执行可配置的进程内限流；超过通用、认证或聊天窗口时返回 `429 TOO_MANY_ATTEMPTS`，并携带 `Retry-After`。所有 API 响应均使用 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`、点击劫持限制、Referrer/Permissions Policy 和 CSP；HTTPS 响应额外携带 HSTS。当前限流状态仅适用于单进程部署，多实例必须改用共享限流设施。
+
 ## 4. 接口总览
 
 | 方法 | 路径 | 输入 | 成功状态 | 响应数据模型 |
@@ -202,6 +209,9 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `POST` | `/api/auth/login` | Body: `LoginRequest` | `200` | `AuthResponse` |
 | `GET` | `/api/auth/me` | Cookie: Session | `200` | `AuthResponse` |
 | `POST` | `/api/auth/logout` | Cookie: 可选 Session | `200` | `LogoutResponse` |
+| `POST` | `/api/auth/password` | Cookie: Session; Body: `ChangePasswordRequest` | `200` | `AuthResponse` |
+| `GET` | `/api/account/export` | Cookie: Session | `200` | `AccountExportResponse` |
+| `DELETE` | `/api/account` | Cookie: Session; Body: `AccountDeleteRequest` | `200` | `AccountDeleteResponse` |
 | `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequestBody` | `200` | `ChatResponse` |
 | `POST` | `/api/feedback` | Body: `FeedbackRequestBody` | `200` | `FeedbackResponse` |
 | `POST` | `/api/reminders` | Body: `ReminderCreateBody` | `201` | `ReminderView` |
@@ -445,6 +455,12 @@ timezone: IANA timezone string
 
 退出必须幂等：有效 Session 立即撤销；Cookie 缺失、无效、已过期或已撤销时仍返回 `200` 和相同响应，同时删除浏览器 Cookie。
 
+#### 账号数据管理对象
+
+- `ChangePasswordRequest` 包含 `current_password` 和 `new_password`，均为 8～128 个字符且二者必须不同。成功后撤销全部旧 Session，并用 `AuthResponse` 签发新的当前 Session。
+- `AccountDeleteRequest` 只包含再次确认用的 `password`；成功响应为 `AccountDeleteResponse`，固定返回 `deleted=true` 并删除 Cookie。
+- `AccountExportResponse` 包含导出时间、无密码字段的账号资料，以及当前账号的消息、提醒、记忆与事件、请求指标和反馈。响应不包含密码哈希、Session、Token 或内部聊天租约记录。
+
 #### 认证接口
 
 ##### `POST /api/auth/register`
@@ -596,7 +612,7 @@ revoked_at TEXT NULL
 
 ### `GET /api/ready`
 
-输入：无 Path、Query 或 Body 参数。该接口检查 SQLite 可连接、必需表存在且数据库迁移版本与应用一致。成功返回 `200 ReadinessResponse`，包含 `status=ok`、`database=ok` 和当前 `schema_version`；检查失败返回 `503 DATABASE_UNAVAILABLE`，不向客户端暴露文件路径或底层 SQLite 错误。
+输入：无 Path、Query 或 Body 参数。该接口检查 SQLite 可连接、必需表存在、数据库迁移版本与应用一致，并验证本地模型客户端配置可构造；不会向模型供应商发送请求。成功返回 `200 ReadinessResponse`，包含 `status=ok`、`database=ok`、`model=ok` 和当前 `schema_version`。数据库失败返回 `503 DATABASE_UNAVAILABLE`，模型配置失败返回 `503 MODEL_UNAVAILABLE`；两者都不向客户端暴露底层异常。
 
 ## 7. Agent 对话
 
@@ -754,7 +770,7 @@ completed | needs_clarification | partial
 
 模型不可用或系统故障导致无法生成有效 `ChatResponse` 时返回 `502`。能够生成解释性回答的工具失败返回 `200 + status=partial`，不使用不存在的 `status=failed`。
 
-携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。收尾阶段的记忆、助手消息、指标和缓存响应必须在同一事务中提交。
+携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。Agent 只返回待提交的提醒变更；`ChatService` 再把提醒变更、记忆、助手消息、指标和缓存响应放入同一事务。任何收尾步骤失败都会回滚提醒变更，同键重试不会重复产生提醒副作用。
 
 ## 8. 用户反馈
 
@@ -1287,11 +1303,13 @@ metrics.py
 - `MetricsService` 负责写入单次请求指标并计算汇总，不允许前端自行猜测缺失指标。
 - 数据库结构通过 `schema_migrations` 顺序升级；旧版无迁移记录的数据库在执行兼容清理前必须生成 SQLite 备份。
 - `ChatService` 使用 `chat_requests` 记录执行状态和幂等结果；模型调用期间不得持有长事务。
-- Chat 收尾阶段的记忆使用、偏好更新、助手消息、指标和最终响应必须在同一事务中完成。
+- Chat 收尾阶段的提醒变更、记忆使用、偏好更新、助手消息、指标和最终响应必须在同一事务中完成。
 - 反馈记录、记忆修改与 `memory_events` 应在同一事务中完成。
 - 提醒确认时比较 `expected_trigger_at`，读取、校验和更新应在同一事务中完成。
 - `AuthService` 负责用户名规范化、Argon2id 密码验证、登录失败限制、Session 签发、解析和撤销。
+- `AuthService` 同时负责修改密码、账号数据导出和账号删除；导出不得包含认证密钥材料，删除必须在单一事务中清理全部关联表。
 - `AuthSessionRepository` 只保存随机 Session Token 的 SHA-256 哈希；原始 Token 不得离开 API 进程内存。
+- SQLite 使用 WAL 与 `synchronous=NORMAL`；运维备份通过 `python -m backend.scripts.backup_database` 调用 SQLite 在线备份 API，调度频率由部署平台负责。
 
 ### 13.4 前端
 

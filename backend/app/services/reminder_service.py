@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -36,8 +38,13 @@ class ReminderService:
         self.reminders = ReminderRepository(database)
         self.users = UserRepository(database)
 
-    def create(self, request: ReminderCreateRequest) -> ReminderView:
-        with self.database.transaction(immediate=True) as connection:
+    def create(
+        self,
+        request: ReminderCreateRequest,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> ReminderView:
+        with self._write_transaction(connection) as connection:
             self._require_user(request.user_id, connection=connection)
             time_matches = self.reminders.list_active_at_time(
                 user_id=request.user_id,
@@ -105,13 +112,19 @@ class ReminderService:
                 )
         return ReminderView.model_validate(reminder)
 
-    def list(self, query: ReminderListQuery) -> ReminderListResponse:
-        self._require_user(query.user_id)
+    def list(
+        self,
+        query: ReminderListQuery,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> ReminderListResponse:
+        self._require_user(query.user_id, connection=connection)
         items, total = self.reminders.list(
             user_id=query.user_id,
             status=query.status,
             limit=query.limit,
             offset=query.offset,
+            connection=connection,
         )
         return ReminderListResponse(items=items, total=total)
 
@@ -136,9 +149,10 @@ class ReminderService:
         request: ReminderUpdateRequest,
         *,
         now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> ReminderView:
         updates = request.model_dump(exclude={"user_id"}, exclude_unset=True)
-        with self.database.transaction(immediate=True) as connection:
+        with self._write_transaction(connection) as connection:
             self._require_user(request.user_id, connection=connection)
             current = self.reminders.get_for_user(
                 str(reminder_id), request.user_id, connection=connection
@@ -222,10 +236,16 @@ class ReminderService:
                 raise ResourceNotFoundError("提醒不存在")
         return ReminderView.model_validate(updated)
 
-    def delete(self, reminder_id: UUID, user_id: str) -> DeleteResponse:
-        self._require_user(user_id)
+    def delete(
+        self,
+        reminder_id: UUID,
+        user_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> DeleteResponse:
+        self._require_user(user_id, connection=connection)
         if not self.reminders.soft_delete(
-            reminder_id=str(reminder_id), user_id=user_id
+            reminder_id=str(reminder_id), user_id=user_id, connection=connection
         ):
             raise ResourceNotFoundError("提醒不存在")
         return DeleteResponse(id=reminder_id, deleted=True)
@@ -363,6 +383,17 @@ class ReminderService:
     ) -> None:
         if not self.users.exists(user_id, connection=connection):
             raise ResourceNotFoundError("用户不存在")
+
+    @contextmanager
+    def _write_transaction(
+        self,
+        connection: sqlite3.Connection | None,
+    ) -> Iterator[sqlite3.Connection]:
+        if connection is not None:
+            yield connection
+            return
+        with self.database.transaction(immediate=True) as active_connection:
+            yield active_connection
 
     def _consolidate_matches(
         self,

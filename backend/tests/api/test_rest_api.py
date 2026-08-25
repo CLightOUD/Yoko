@@ -15,6 +15,9 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
         ("post", "/api/auth/login"),
         ("get", "/api/auth/me"),
         ("post", "/api/auth/logout"),
+        ("post", "/api/auth/password"),
+        ("get", "/api/account/export"),
+        ("delete", "/api/account"),
         ("post", "/api/chat"),
         ("post", "/api/feedback"),
         ("post", "/api/reminders"),
@@ -67,7 +70,28 @@ def test_readiness_reports_database_schema(client) -> None:
     assert response.json() == {
         "status": "ok",
         "database": "ok",
+        "model": "ok",
         "schema_version": 3,
+    }
+
+
+def test_readiness_reports_sanitized_model_configuration_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    app = create_app(database=Database(tmp_path / "model-not-ready.db"))
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "MODEL_UNAVAILABLE",
+        "message": "模型服务尚未就绪",
+        "details": None,
     }
 
 
@@ -88,6 +112,19 @@ def test_readiness_returns_sanitized_503_when_database_is_unavailable(
         "message": "数据库暂不可用",
         "details": None,
     }
+
+
+def test_api_responses_include_security_and_no_store_headers(client) -> None:
+    response = client.get("/api/health")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["permissions-policy"] == (
+        "camera=(), microphone=(), geolocation=()"
+    )
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_reminder_crud_and_idempotent_acknowledgement(client) -> None:

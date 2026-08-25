@@ -400,6 +400,52 @@ def test_chat_finalization_rolls_back_and_can_retry(client, monkeypatch) -> None
     assert recovered.json()["memory_changes"][0]["action"] == "created"
 
 
+def test_reminder_mutation_and_chat_finalization_commit_atomically(
+    client,
+    monkeypatch,
+) -> None:
+    metrics_service = client.app.state.metrics_service
+    original_record = metrics_service.record
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("simulated finalization failure")
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(metrics_service, "record", fail_once)
+    payload = {"message": "创建每日提醒"}
+    headers = {"Idempotency-Key": "chat-atomic-reminder-0001"}
+
+    failed = client.post("/api/chat", json=payload, headers=headers)
+    with client.app.state.database.connection() as connection:
+        failed_request = connection.execute(
+            "SELECT id, status FROM chat_requests WHERE idempotency_key = ?",
+            (headers["Idempotency-Key"],),
+        ).fetchone()
+        failed_reminders = connection.execute(
+            "SELECT COUNT(*) FROM reminders WHERE user_id = ? AND status = 'active'",
+            (client.app.state.test_user_id,),
+        ).fetchone()[0]
+
+    recovered = client.post("/api/chat", json=payload, headers=headers)
+    cached = client.post("/api/chat", json=payload, headers=headers)
+    with client.app.state.database.connection() as connection:
+        active_reminders = connection.execute(
+            "SELECT COUNT(*) FROM reminders WHERE user_id = ? AND status = 'active'",
+            (client.app.state.test_user_id,),
+        ).fetchone()[0]
+
+    assert failed.status_code == 500
+    assert failed_request["status"] == "failed"
+    assert failed_reminders == 0
+    assert recovered.status_code == cached.status_code == 200
+    assert recovered.json() == cached.json()
+    assert active_reminders == 1
+
+
 def test_pending_chat_conflicts_until_lease_expires_then_recovers(client) -> None:
     payload = {"user_id": "demo-user", "message": "租约恢复测试"}
     key = "chat-request-0005"

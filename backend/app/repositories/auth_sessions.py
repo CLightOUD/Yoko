@@ -91,3 +91,22 @@ class AuthSessionRepository(BaseRepository):
                 (current,),
             )
         return cursor.rowcount
+
+    def revoke_all_for_user(
+        self,
+        user_id: str,
+        *,
+        revoked_at: datetime | str,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        revoked = normalize_datetime(revoked_at)
+        with self._connection(connection, write=True) as active_connection:
+            cursor = active_connection.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = ?
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                (revoked, user_id),
+            )
+        return cursor.rowcount

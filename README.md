@@ -38,7 +38,7 @@ memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
 the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
 credentials; the other endpoints can run without an LLM key.
 
-Account authentication is active in API contract version `0.4.0`. Registration
+Account authentication is active in API contract version `0.5.0`. Registration
 and login issue a fixed 180-day HttpOnly session cookie backed by the V3 SQLite
 schema. Chat, feedback, reminder, memory, and metrics endpoints require that
 session and derive ownership on the server; a client-supplied `user_id` is
@@ -46,14 +46,17 @@ ignored during the temporary frontend transition. State-changing requests also
 require the configured frontend origin or the API's own origin.
 
 `GET /api/health` is the process liveness check and `GET /api/ready` verifies
-the database and migration version. Chat clients may send an `Idempotency-Key`
+the database, migration version, and local model-client configuration without
+sending a model request. Chat clients may send an `Idempotency-Key`
 header and must reuse it when retrying the same request.
 
 Each chat turn first runs a structured semantic-preprocessing model call and
 then the main Agent. The resulting `SemanticFrame` marks the final operation,
 self-corrections, cancellation, ambiguity, evidence message numbers and
 confidence. Reminder writes are staged and execute only after the final Agent
-decision agrees with that frame. A deterministic guard also verifies real
+decision agrees with that frame. The reminder mutation, memory changes,
+assistant message, metrics, and idempotent response then commit in one SQLite
+transaction. A deterministic guard also verifies real
 message numbers, at most one mutation, list-before-update/delete and retrieved
 `preferred_time` memory IDs. The original user text remains the source of truth.
 
@@ -124,6 +127,17 @@ AUTH_COOKIE_NAME=yoko_session
 Production HTTPS must use `AUTH_COOKIE_SECURE=true` and the
 `__Host-yoko_session` cookie name.
 
+The backend also provides password change, JSON account export, and confirmed
+account deletion endpoints. API requests include security headers and are
+rate-limited in process for the current single-instance SQLite deployment. The
+limits can be configured with the `RATE_LIMIT_*` variables in `.env.example`.
+
+Create a consistent SQLite backup (and retain the newest 14 files) with:
+
+```powershell
+python -m backend.scripts.backup_database --keep 14
+```
+
 ---
 
 # 中文说明
@@ -165,18 +179,20 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 `API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
 凭据，其他接口不依赖大模型密钥即可运行。
 
-账号认证已在接口合同 `0.4.0` 中启用。注册和登录使用 V3 SQLite 数据结构签发
+账号认证已在接口合同 `0.5.0` 中启用。注册和登录使用 V3 SQLite 数据结构签发
 固定 180 天的 HttpOnly Session Cookie。聊天、反馈、提醒、记忆和指标接口都要求
 有效 Session，资源归属由后端确定；前端过渡期间多传的 `user_id` 会被忽略。
 所有写请求还必须来自配置的前端 Origin 或 API 同源页面。
 
-`GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接和迁移版本。
+`GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接、迁移版本和
+本地模型客户端配置；该检查不会发送真实模型请求。
 聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
 
 每轮聊天先调用一次结构化语义预处理模型生成 `SemanticFrame`，再运行主 Agent。
 语义帧标记最终操作、改口、撤销、歧义、用户消息证据编号和置信度；用户原文仍是
 最终事实来源。只有主 Agent 明确调用工具形成计划，且最终决定与语义帧一致时才会
-写入。`preferred_time` 可以补全缺失钟点，但关键词、正则和固定错别字替换不会直接
+写入。提醒变更、记忆变更、助手消息、指标和幂等响应会在同一 SQLite 事务提交。
+`preferred_time` 可以补全缺失钟点，但关键词、正则和固定错别字替换不会直接
 创建提醒；长期偏好候选由主 Agent 的结构化结果返回。
 
 当用户明确要求查询公开网络信息，或问题依赖会变化的外部事实时，语义预处理模型会
@@ -258,3 +274,13 @@ AUTH_COOKIE_NAME=yoko_session
 
 生产 HTTPS 环境必须使用 `AUTH_COOKIE_SECURE=true` 和
 `__Host-yoko_session` Cookie 名称。
+
+后端同时提供修改密码、JSON 账号数据导出和密码确认后的账号删除接口。API 默认附加
+安全响应头，并按 `.env.example` 中的 `RATE_LIMIT_*` 配置执行进程内限流；该实现适配
+当前单实例 SQLite 部署，多实例部署应改用网关或 Redis 共享限流。
+
+生成一致性 SQLite 备份并仅保留最新 14 份：
+
+```powershell
+python -m backend.scripts.backup_database --keep 14
+```

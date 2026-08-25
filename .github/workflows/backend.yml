@@ -1,0 +1,28 @@
+name: Backend checks
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - "requirements*.txt"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "requirements*.txt"
+      - ".github/workflows/backend.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-lock.txt
+      - run: python -m pip install --requirement requirements-lock.txt
+      - run: python -m pip check
+      - run: python -m pytest backend/tests -q -p no:cacheprovider

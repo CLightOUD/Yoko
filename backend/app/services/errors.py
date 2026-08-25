@@ -42,6 +42,10 @@ class ModelUnavailableError(ServiceError):
     pass
 
 
+class ModelNotReadyError(ServiceError):
+    pass
+
+
 class ToolExecutionError(ServiceError):
     pass
 

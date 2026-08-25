@@ -14,6 +14,7 @@ from pydantic import (
 )
 from pydantic.experimental.missing_sentinel import MISSING
 
+from backend.app.config import default_timezone
 from backend.app.schemas.common import (
     APIModel,
     SessionBoundAPIModel,
@@ -56,7 +57,7 @@ class ReminderView(APIModel):
 class ReminderCreateBody(SessionBoundAPIModel):
     title: ReminderInputTitle
     next_trigger_at: AwareDatetime
-    timezone: str = "Asia/Shanghai"
+    timezone: str = Field(default_factory=default_timezone)
     repeat_type: RepeatType = "none"
 
     @field_validator("next_trigger_at")

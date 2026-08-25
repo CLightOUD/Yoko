@@ -17,6 +17,7 @@ from backend.app.services import (
     InvalidCredentialsError,
     InvalidRequestError,
     ModelUnavailableError,
+    ModelNotReadyError,
     OriginNotAllowedError,
     ResourceConflictError,
     ResourceNotFoundError,
@@ -111,6 +112,7 @@ def install_error_handlers(app: FastAPI) -> None:
             ResourceNotFoundError: (404, "RESOURCE_NOT_FOUND"),
             ResourceConflictError: (409, "RESOURCE_CONFLICT"),
             ModelUnavailableError: (502, "MODEL_UNAVAILABLE"),
+            ModelNotReadyError: (503, "MODEL_UNAVAILABLE"),
             ToolExecutionError: (502, "TOOL_EXECUTION_FAILED"),
             TooManyAttemptsError: (429, "TOO_MANY_ATTEMPTS"),
             UsernameAlreadyExistsError: (409, "USERNAME_ALREADY_EXISTS"),
@@ -130,8 +132,12 @@ def install_error_handlers(app: FastAPI) -> None:
             AuthenticationRequiredError: "请先登录",
             AuthenticationUnavailableError: "认证服务尚未完成接入",
             InvalidCredentialsError: "用户名或密码错误",
+            InvalidRequestError: "请求参数无效",
             ModelUnavailableError: "模型服务暂不可用，请稍后重试",
+            ModelNotReadyError: "模型服务尚未就绪",
             OriginNotAllowedError: "请求来源不受信任",
+            ResourceNotFoundError: "资源不存在",
+            ResourceConflictError: "资源状态冲突",
             ToolExecutionError: "外部工具暂不可用，请稍后重试",
             DatabaseUnavailableError: "数据库暂不可用",
             TooManyAttemptsError: "登录失败次数过多，请稍后再试",
@@ -141,7 +147,7 @@ def install_error_handlers(app: FastAPI) -> None:
             request,
             status_code=status_code,
             code=code,
-            message=safe_messages.get(type(exc), str(exc) or "请求处理失败"),
+            message=safe_messages.get(type(exc), "请求处理失败"),
         )
 
     @app.exception_handler(HTTPException)

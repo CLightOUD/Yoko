@@ -1,5 +1,9 @@
 from backend.app.schemas.auth import (
+    AccountDeleteRequest,
+    AccountDeleteResponse,
+    AccountExportResponse,
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     LogoutResponse,
     RegisterRequest,
@@ -59,6 +63,10 @@ from backend.app.schemas.reminder import (
 
 __all__ = [
     "AuthResponse",
+    "AccountDeleteRequest",
+    "AccountDeleteResponse",
+    "AccountExportResponse",
+    "ChangePasswordRequest",
     "ChatRequest",
     "ChatRequestBody",
     "ChatResponse",

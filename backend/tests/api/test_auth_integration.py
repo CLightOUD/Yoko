@@ -156,3 +156,90 @@ def test_openapi_does_not_accept_client_user_id(api_app) -> None:
             )
         }
         assert "user_id" not in names, path
+
+
+def test_account_export_password_change_and_deletion(client) -> None:
+    user_id = client.app.state.test_user_id
+    created = client.post(
+        "/api/reminders",
+        json={
+            "title": "导出测试提醒",
+            "next_trigger_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            "timezone": "Asia/Shanghai",
+            "repeat_type": "none",
+        },
+    )
+    assert created.status_code == 201
+
+    exported = client.get("/api/account/export")
+    assert exported.status_code == 200
+    assert exported.headers["content-disposition"] == (
+        'attachment; filename="yoko-account-export.json"'
+    )
+    payload = exported.json()
+    assert payload["account"]["id"] == user_id
+    assert payload["reminders"][0]["title"] == "导出测试提醒"
+    assert "password_hash" not in exported.text
+    assert "token_hash" not in exported.text
+
+    changed = client.post(
+        "/api/auth/password",
+        json={
+            "current_password": "correct-horse-2026",
+            "new_password": "new-correct-horse-2026",
+        },
+    )
+    assert changed.status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+
+    assert client.post("/api/auth/logout").status_code == 200
+    old_login = client.post(
+        "/api/auth/login",
+        json={
+            "username": "api_test_user",
+            "password": "correct-horse-2026",
+        },
+    )
+    assert old_login.status_code == 401
+    new_login = client.post(
+        "/api/auth/login",
+        json={
+            "username": "api_test_user",
+            "password": "new-correct-horse-2026",
+        },
+    )
+    assert new_login.status_code == 200
+
+    wrong_delete = client.request(
+        "DELETE",
+        "/api/account",
+        json={"password": "wrong-password-2026"},
+    )
+    assert wrong_delete.status_code == 401
+    deleted = client.request(
+        "DELETE",
+        "/api/account",
+        json={"password": "new-correct-horse-2026"},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True}
+    assert client.get("/api/auth/me").status_code == 401
+
+    with client.app.state.database.connection() as connection:
+        for table in (
+            "users",
+            "messages",
+            "reminders",
+            "memories",
+            "memory_events",
+            "request_metrics",
+            "feedbacks",
+            "chat_requests",
+            "auth_sessions",
+        ):
+            column = "id" if table == "users" else "user_id"
+            count = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} = ?",
+                (user_id,),
+            ).fetchone()[0]
+            assert count == 0, table

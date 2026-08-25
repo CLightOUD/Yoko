@@ -261,7 +261,8 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert "https://example.gov.cn/policy" in result.reply
     assert "13800138000" not in result.reply
     assert "elder.test@example.com" not in result.reply
-    assert "不会在联网查询中使用或保存" in result.reply
+    assert "不会用于联网查询" in result.reply
+    assert "对话原文会按系统的数据管理规则保存" in result.reply
     assert "不可信外部资料" in captured["system_prompt"]
     assert "不得在回复中复述" in captured["system_prompt"]
     assert "政策页面于2026年更新" in captured["system_prompt"]
@@ -882,6 +883,7 @@ def test_langchain_agent_tool_calls_service_without_http(monkeypatch, tmp_path) 
                 "structured_response": {
                     "status": "completed",
                     "reply": "提醒已经创建。",
+                    "reminder_operation": "create",
                     "used_memory_ids": [],
                 },
             }
@@ -1021,6 +1023,7 @@ def test_clarification_fragments_form_one_valid_reminder_plan(
                 "structured_response": {
                     "status": "completed",
                     "reply": "已设置下午五点四十分的吃药提醒。",
+                    "reminder_operation": "create",
                     "used_memory_ids": [],
                 },
             }
@@ -1090,6 +1093,7 @@ def test_explicit_confirmation_can_execute_the_pending_user_request(
                 "structured_response": {
                     "status": "completed",
                     "reply": "已经设置好吃药提醒。",
+                    "reminder_operation": "create",
                     "used_memory_ids": [],
                 },
             }
@@ -1643,6 +1647,7 @@ def test_memory_backed_reminder_is_created_only_after_model_tool_call(
                 "structured_response": {
                     "status": "completed",
                     "reply": "已按您的习惯设置提醒。",
+                    "reminder_operation": "create",
                     "used_memory_ids": [str(memory.id)],
                 },
             }
@@ -1735,7 +1740,12 @@ def test_clarification_decision_discards_staged_model_plan(monkeypatch, tmp_path
     assert reminders.list(ReminderListQuery(user_id="demo-user")).total == 0
 
 
-def test_conflicting_structured_operation_does_not_execute(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("final_operation", ["none", "delete"])
+def test_conflicting_structured_operation_does_not_execute(
+    monkeypatch,
+    tmp_path,
+    final_operation,
+) -> None:
     zone = ZoneInfo("Asia/Shanghai")
     trigger_at = (datetime.now(zone) + timedelta(days=1)).replace(
         hour=9, minute=0, second=0, microsecond=0
@@ -1762,7 +1772,7 @@ def test_conflicting_structured_operation_does_not_execute(monkeypatch, tmp_path
                 "structured_response": {
                     "status": "completed",
                     "reply": "已经处理。",
-                    "reminder_operation": "delete",
+                    "reminder_operation": final_operation,
                 },
             }
 
@@ -1771,7 +1781,7 @@ def test_conflicting_structured_operation_does_not_execute(monkeypatch, tmp_path
         "backend.app.agent.runtime.create_agent",
         lambda **kwargs: ConflictingGraph(kwargs["tools"][0]),
     )
-    database = Database(tmp_path / "conflicting-operation.db")
+    database = Database(tmp_path / f"conflicting-operation-{final_operation}.db")
     database.initialize()
     reminders = ReminderService(database)
 
@@ -2376,6 +2386,7 @@ def test_agent_lists_then_updates_existing_reminder(monkeypatch, tmp_path) -> No
                 "structured_response": {
                     "status": "completed",
                     "reply": "已经把提醒改成后天晚上8点。",
+                    "reminder_operation": "update",
                     "used_memory_ids": [],
                 },
             }
@@ -2498,6 +2509,7 @@ def test_agent_lists_then_deletes_existing_reminder(monkeypatch, tmp_path) -> No
                 "structured_response": {
                     "status": "completed",
                     "reply": "已经删除每天早上8点的降压药提醒。",
+                    "reminder_operation": "delete",
                     "used_memory_ids": [],
                 },
             }

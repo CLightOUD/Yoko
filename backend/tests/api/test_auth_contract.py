@@ -224,6 +224,43 @@ def test_auth_routes_set_secure_cookie_and_use_frozen_response_models(
         assert service.last_logout_token == "raw-session-token"
 
 
+def test_auth_endpoints_are_rate_limited_per_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_AUTH_PER_MINUTE", "1")
+    service = FakeAuthService()
+    app = create_app(
+        database=Database(tmp_path / "auth-rate-limit.db"),
+        auth_service=service,  # type: ignore[arg-type]
+    )
+    payload = {
+        "username": "alice_01",
+        "password": "correct-horse-2026",
+        "display_name": "李阿姨",
+        "timezone": "Asia/Shanghai",
+    }
+
+    with TestClient(
+        app,
+        headers={"Origin": "http://127.0.0.1:5173"},
+    ) as client:
+        first = client.post("/api/auth/register", json=payload)
+        limited = client.post("/api/auth/register", json=payload)
+
+    assert first.status_code == 201
+    assert limited.status_code == 429
+    assert limited.json()["error"] == {
+        "code": "TOO_MANY_ATTEMPTS",
+        "message": "请求过于频繁，请稍后重试",
+        "details": None,
+    }
+    assert int(limited.headers["retry-after"]) >= 1
+    assert limited.headers["access-control-allow-origin"] == (
+        "http://127.0.0.1:5173"
+    )
+
+
 def test_auth_openapi_contract_is_registered() -> None:
     app = create_app()
     paths = app.openapi()["paths"]

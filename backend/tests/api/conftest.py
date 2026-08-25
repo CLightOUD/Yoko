@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.agent import AgentRunResult
+from backend.app.agent import AgentRunResult, PendingReminderMutation
 from backend.app.agent.preferences import extract_preferences
 from backend.app.database import Database
 from backend.app.main import create_app
@@ -29,12 +29,14 @@ class FakeAgent:
         memories,
         history,
         reminder_service,
+        defer_mutations=False,
     ) -> AgentRunResult:
         self.call_count += 1
         self.last_history = history
         used_ids = [memories[0].id] if memories else []
         tool_calls = []
         sources = []
+        pending_mutation = None
         status = "completed"
         if "信息不足" in message:
             status = "needs_clarification"
@@ -51,24 +53,27 @@ class FakeAgent:
                 )
             ]
         elif "创建每日提醒" in message:
-            reminder = reminder_service.create(
-                ReminderCreateRequest(
-                    user_id=user_id,
-                    title="服药",
-                    next_trigger_at=now + timedelta(days=1),
-                    timezone=timezone,
-                    repeat_type="daily",
-                )
+            reminder_request = ReminderCreateRequest(
+                user_id=user_id,
+                title="服药",
+                next_trigger_at=now + timedelta(days=1),
+                timezone=timezone,
+                repeat_type="daily",
             )
-            reply = f"已创建提醒：{reminder.title}。"
-            tool_calls = [
-                ToolCallView(
-                    tool_name="create_reminder",
-                    status="success",
-                    summary="创建每日服药提醒",
-                    latency_ms=1,
+            reply = "已创建提醒：服药。"
+
+            def create_reminder(connection):
+                reminder_service.create(
+                    reminder_request,
+                    connection=connection,
                 )
-            ]
+                return "创建每日服药提醒"
+
+            pending_mutation = PendingReminderMutation(
+                tool_name="create_reminder",
+                execute=create_reminder,
+                validation_reply="请重新说明提醒事项和时间。",
+            )
         elif "联网查询" in message:
             reply = "已查询公开信息。"
             tool_calls = [
@@ -103,6 +108,7 @@ class FakeAgent:
             tool_ms=sum(call.latency_ms for call in tool_calls),
             memory_candidates=extract_preferences(message),
             sources=sources,
+            pending_reminder_mutation=pending_mutation,
         )
 
 

@@ -75,6 +75,7 @@ class HealthResponse(APIModel):
 class ReadinessResponse(APIModel):
     status: Literal["ok"]
     database: Literal["ok"]
+    model: Literal["ok"]
     schema_version: int = Field(ge=1)
 
 

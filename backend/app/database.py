@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
+
+from backend.app.config import default_timezone
 
 
 DEFAULT_DATABASE_PATH = Path("backend/data/app.db")
@@ -205,6 +207,8 @@ class Database:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     def initialize(self) -> None:
@@ -280,6 +284,25 @@ class Database:
                 raise RuntimeError(f"required table is missing: {missing['name']}")
         return version
 
+    def backup_to(self, destination: str | Path) -> Path:
+        target = Path(destination)
+        if target.exists():
+            raise FileExistsError(f"backup destination already exists: {target}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_suffix(f"{target.suffix}.partial")
+        if partial.exists():
+            raise FileExistsError(f"partial backup already exists: {partial}")
+        try:
+            with self.connection() as source, closing(
+                sqlite3.connect(partial)
+            ) as backup:
+                source.backup(backup)
+            partial.replace(target)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+        return target
+
     @staticmethod
     def _schema_version(connection: sqlite3.Connection) -> int:
         table = connection.execute(
@@ -317,7 +340,7 @@ class Database:
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO NOTHING
             """,
-            ("demo-user", "用户", "Asia/Shanghai", applied_at, applied_at),
+            ("demo-user", "用户", default_timezone(), applied_at, applied_at),
         )
 
     @staticmethod

@@ -39,9 +39,11 @@ def test_initialize_is_idempotent_and_seeds_demo_user(database: Database) -> Non
             ).fetchall()
         }
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
 
     assert EXPECTED_TABLES <= tables
     assert foreign_keys == 1
+    assert journal_mode == "wal"
     assert database.schema_version() == LATEST_SCHEMA_VERSION
     assert database.check_readiness() == LATEST_SCHEMA_VERSION
     demo_user = UserRepository(database).get("demo-user")
@@ -59,6 +61,23 @@ def test_initialize_is_idempotent_and_seeds_demo_user(database: Database) -> Non
         "failed_login_count": 0,
         "login_blocked_until": None,
     }
+
+
+def test_database_backup_is_consistent_and_does_not_overwrite(
+    database: Database,
+    tmp_path,
+) -> None:
+    database.initialize()
+    backup_path = tmp_path / "backups" / "snapshot.db"
+
+    created = database.backup_to(backup_path)
+
+    assert created == backup_path
+    with sqlite3.connect(backup_path) as backup:
+        assert backup.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert backup.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= 1
+    with pytest.raises(FileExistsError):
+        database.backup_to(backup_path)
 
 
 def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(

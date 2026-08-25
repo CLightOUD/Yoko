@@ -12,11 +12,21 @@ from pwdlib import PasswordHash
 
 from backend.app.database import Database
 from backend.app.repositories import AuthSessionRepository, UserRepository
-from backend.app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest
-from backend.app.schemas.auth import UserView
+from backend.app.schemas.auth import (
+    AccountDeleteRequest,
+    AccountDeleteResponse,
+    AccountExportResponse,
+    AuthResponse,
+    ChangePasswordRequest,
+    LoginRequest,
+    RegisterRequest,
+    UserView,
+)
 from backend.app.services.errors import (
     AuthenticationRequiredError,
     InvalidCredentialsError,
+    InvalidRequestError,
+    ResourceNotFoundError,
     UsernameAlreadyExistsError,
 )
 
@@ -162,6 +172,148 @@ class AuthService:
         self.sessions.revoke_by_token_hash(
             self._hash_token(session_token), revoked_at=self._utc_now()
         )
+
+    def change_password(
+        self,
+        user_id: str,
+        request: ChangePasswordRequest,
+    ) -> IssuedSession:
+        now = self._utc_now()
+        current_password = request.current_password.get_secret_value()
+        new_password = request.new_password.get_secret_value()
+        with self.database.transaction(immediate=True) as connection:
+            user = self.users.get(user_id, connection=connection)
+            if (
+                user is None
+                or user["password_hash"] is None
+                or not self._verify_password(current_password, user["password_hash"])
+            ):
+                raise InvalidCredentialsError("用户名或密码错误")
+            if self._verify_password(new_password, user["password_hash"]):
+                raise InvalidRequestError("新密码不能与当前密码相同")
+            updated = self.users.update_password(
+                user_id,
+                password_hash=self.password_hash.hash(new_password),
+                connection=connection,
+            )
+            self.sessions.revoke_all_for_user(
+                user_id,
+                revoked_at=now,
+                connection=connection,
+            )
+            return self._issue_session(updated, now=now, connection=connection)
+
+    def export_account(self, user_id: str) -> AccountExportResponse:
+        with self.database.transaction() as connection:
+            user = self.users.get(user_id, connection=connection)
+            if user is None or user["username"] is None:
+                raise ResourceNotFoundError("用户不存在")
+
+            def rows(sql: str) -> list[dict]:
+                return [dict(row) for row in connection.execute(sql, (user_id,))]
+
+            account = {
+                key: user[key]
+                for key in (
+                    "id",
+                    "username",
+                    "display_name",
+                    "timezone",
+                    "created_at",
+                    "updated_at",
+                    "last_login_at",
+                )
+            }
+            messages = rows(
+                """
+                SELECT id, conversation_id, role, content, request_id, created_at
+                FROM messages WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+            reminders = rows(
+                """
+                SELECT id, title, next_trigger_at, timezone, repeat_type, status,
+                       last_triggered_at, created_at, updated_at
+                FROM reminders WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+            memories = rows(
+                """
+                SELECT id, scope, task_type, memory_key, memory_value,
+                       display_text, active, source_message_id, created_at,
+                       updated_at, last_used_at
+                FROM memories WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+            memory_events = rows(
+                """
+                SELECT id, memory_id, action, source_message_id, before_value,
+                       after_value, created_at
+                FROM memory_events WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+            request_metrics = rows(
+                """
+                SELECT id, request_id, model_call_count, input_tokens,
+                       output_tokens, memory_tokens, retrieved_memory_count,
+                       used_memory_count, retrieval_ms, model_ms, tool_ms,
+                       total_ms, retrieved_memory_ids, used_memory_ids, created_at
+                FROM request_metrics WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+            feedbacks = rows(
+                """
+                SELECT id, request_id, feedback_message_id, feedback_text,
+                       corrected_reply, rating, created_at
+                FROM feedbacks WHERE user_id = ? ORDER BY created_at, id
+                """
+            )
+        return AccountExportResponse(
+            exported_at=self._utc_now(),
+            account=account,
+            messages=messages,
+            reminders=reminders,
+            memories=memories,
+            memory_events=memory_events,
+            request_metrics=request_metrics,
+            feedbacks=feedbacks,
+        )
+
+    def delete_account(
+        self,
+        user_id: str,
+        request: AccountDeleteRequest,
+    ) -> AccountDeleteResponse:
+        password = request.password.get_secret_value()
+        with self.database.transaction(immediate=True) as connection:
+            user = self.users.get(user_id, connection=connection)
+            if (
+                user is None
+                or user["password_hash"] is None
+                or not self._verify_password(password, user["password_hash"])
+            ):
+                raise InvalidCredentialsError("用户名或密码错误")
+            for table in (
+                "feedbacks",
+                "memory_events",
+                "memories",
+                "request_metrics",
+                "chat_requests",
+                "reminders",
+                "auth_sessions",
+                "messages",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?",
+                    (user_id,),
+                )
+            deleted = connection.execute(
+                "DELETE FROM users WHERE id = ?",
+                (user_id,),
+            )
+            if deleted.rowcount != 1:
+                raise ResourceNotFoundError("用户不存在")
+        return AccountDeleteResponse(deleted=True)
 
     def _issue_session(
         self,

@@ -9,20 +9,28 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from backend.app.api.dependencies import (
     get_auth_cookie_name,
     get_auth_service,
+    get_current_user,
     require_trusted_origin,
 )
 from backend.app.api.errors import error_responses
 from backend.app.schemas import (
+    AccountDeleteRequest,
+    AccountDeleteResponse,
+    AccountExportResponse,
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     LogoutResponse,
     RegisterRequest,
+    UserView,
 )
 from backend.app.services.auth_service import AuthService, IssuedSession
 
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
+account_router = APIRouter(prefix="/api/account", tags=["account"])
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
+CurrentUserDependency = Annotated[UserView, Depends(get_current_user)]
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -114,3 +122,53 @@ def logout(
     service.logout(_session_token(request))
     response.delete_cookie(key=get_auth_cookie_name(), path="/")
     return LogoutResponse(logged_out=True)
+
+
+@router.post(
+    "/password",
+    response_model=AuthResponse,
+    responses=error_responses(400, 401, 403, 422, 500),
+    dependencies=[Depends(require_trusted_origin)],
+)
+def change_password(
+    request: ChangePasswordRequest,
+    response: Response,
+    service: AuthServiceDependency,
+    current_user: CurrentUserDependency,
+) -> AuthResponse:
+    issued = service.change_password(str(current_user.id), request)
+    _set_session_cookie(response, issued)
+    return issued.response
+
+
+@account_router.get(
+    "/export",
+    response_model=AccountExportResponse,
+    responses=error_responses(401, 404, 500),
+)
+def export_account(
+    response: Response,
+    service: AuthServiceDependency,
+    current_user: CurrentUserDependency,
+) -> AccountExportResponse:
+    response.headers["Content-Disposition"] = (
+        'attachment; filename="yoko-account-export.json"'
+    )
+    return service.export_account(str(current_user.id))
+
+
+@account_router.delete(
+    "",
+    response_model=AccountDeleteResponse,
+    responses=error_responses(401, 403, 404, 422, 500),
+    dependencies=[Depends(require_trusted_origin)],
+)
+def delete_account(
+    request: AccountDeleteRequest,
+    response: Response,
+    service: AuthServiceDependency,
+    current_user: CurrentUserDependency,
+) -> AccountDeleteResponse:
+    result = service.delete_account(str(current_user.id), request)
+    response.delete_cookie(key=get_auth_cookie_name(), path="/")
+    return result

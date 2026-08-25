@@ -14,9 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.agent import AgentRuntime, LangChainAgent
-from backend.app.api.auth import router as auth_router
+from backend.app.api.auth import account_router, router as auth_router
 from backend.app.api.chat import router as chat_router
-from backend.app.api.errors import install_error_handlers
+from backend.app.api.errors import error_response, install_error_handlers
 from backend.app.api.feedback import router as feedback_router
 from backend.app.api.health import router as health_router
 from backend.app.api.memories import router as memories_router
@@ -24,6 +24,7 @@ from backend.app.api.metrics import router as metrics_router
 from backend.app.api.reminders import router as reminders_router
 from backend.app.database import Database
 from backend.app.logging_config import configure_logging
+from backend.app.rate_limit import RequestRateLimiter
 from backend.app.services import MemoryService, MetricsService, ReminderService
 from backend.app.services.auth_service import AuthService
 from backend.app.services.chat_service import ChatService
@@ -68,15 +69,9 @@ def create_app(
         app.state.chat_service = chat_service
         yield
 
-    application = FastAPI(title="Yoko API", version="0.4.0", lifespan=lifespan)
+    application = FastAPI(title="Yoko API", version="0.5.0", lifespan=lifespan)
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=[frontend_origin],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    rate_limiter = RequestRateLimiter()
 
     @application.middleware("http")
     async def attach_request_id(request: Request, call_next):
@@ -84,9 +79,47 @@ def create_app(
         started = perf_counter()
         status_code = 500
         try:
-            response = await call_next(request)
+            session_token = request.cookies.get(
+                os.getenv("AUTH_COOKIE_NAME", "yoko_session")
+            )
+            limited = rate_limiter.check(
+                path=request.url.path,
+                method=request.method,
+                client_host=request.client.host if request.client else "unknown",
+                session_token=session_token,
+            )
+            if limited is None:
+                response = await call_next(request)
+            else:
+                response = error_response(
+                    request,
+                    status_code=429,
+                    code="TOO_MANY_ATTEMPTS",
+                    message="请求过于频繁，请稍后重试",
+                )
+                response.headers["Retry-After"] = str(limited.retry_after)
+                response.headers["X-RateLimit-Limit"] = str(limited.limit)
+                response.headers["X-RateLimit-Remaining"] = "0"
             status_code = response.status_code
             response.headers["X-Request-ID"] = str(request.state.request_id)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Permissions-Policy"] = (
+                "camera=(), microphone=(), geolocation=()"
+            )
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+                "frame-ancestors 'none'; form-action 'self'"
+            )
+            if request.url.path.startswith("/api/"):
+                response.headers["Cache-Control"] = "no-store"
+            if request.url.scheme == "https":
+                response.headers["Strict-Transport-Security"] = (
+                    "max-age=31536000; includeSubDomains"
+                )
             return response
         finally:
             logger.info(
@@ -102,9 +135,18 @@ def create_app(
                 },
             )
 
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[frontend_origin],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     install_error_handlers(application)
     application.include_router(health_router)
     application.include_router(auth_router)
+    application.include_router(account_router)
     application.include_router(chat_router)
     application.include_router(feedback_router)
     application.include_router(reminders_router)
