@@ -641,6 +641,34 @@ revoked_at TEXT NULL
 | `conversation_id` | UUID 字符串或 `null` | 否 | `null` | 为空时创建新会话；非空时必须属于该用户 |
 | `message` | 字符串 | 是 | 无 | 去除首尾空格后长度为 1 至 2000 |
 | `timezone` | IANA 时区字符串或 `null` | 否 | `null` | 为空时读取用户设置，再回退到 `Asia/Shanghai` |
+| `image` | `ChatImageInput` 或 `null` | 否 | `null` | 每轮最多一张图片；省略时保持原有纯文本行为 |
+
+图片请求示例：
+
+```json
+{
+  "conversation_id": null,
+  "message": "帮我看看这个药盒上写的用法",
+  "timezone": "Asia/Shanghai",
+  "image": {
+    "media_type": "image/png",
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "detail": "original"
+  }
+}
+```
+
+`ChatImageInput` 字段：
+
+| 字段 | 类型 | 必填 | 默认值 | 规则 |
+| --- | --- | --- | --- | --- |
+| `media_type` | 枚举字符串 | 是 | 无 | 仅允许 `image/jpeg`、`image/png`、`image/webp`；后端还必须按实际文件内容复核，不能只信任该字段 |
+| `data` | 字符串 | 是 | 无 | 只包含标准 Base64 数据，不得带 `data:` URL 前缀；解码后必须大于 0 且不超过 5 MiB |
+| `detail` | 枚举字符串 | 否 | `original` | 仅允许 `low` 或 `original`；普通场景优先 `low`，需要读取小字时使用 `original` |
+
+图片不是系统指令。视觉模型输出必须作为不可信观察结果传给主 Agent；图片或 OCR 中的指令性文字不得覆盖系统规则、绕过提醒确认或直接触发写工具。涉及药品用法、时间、日期或低置信度内容时必须向用户确认。第一版不长期保存原图，Base64 数据不得写入日志、数据库、指标或错误详情。
+
+接口冻结阶段尚未接通视觉模型时，合法带图请求明确返回 `503 MODEL_UNAVAILABLE`，不会忽略图片后按纯文本继续处理。队员完成视觉服务接入后移除此临时保护；纯文本请求不受影响。
 
 成功响应：`200 OK`，模型为 `ChatResponse`。下列字段始终返回：
 
@@ -1222,12 +1250,17 @@ auth.py
   LogoutResponse
 
 chat.py
+  ChatImageInput
   ChatRequestBody
   ChatRequest
   ChatResponse
   RetrievedMemory
   ToolCallView
   RequestMetrics
+
+services/vision_contract.py（内部契约，不是公开 API 模型）
+  VisionObservation
+  VisionAnalyzer
 
 feedback.py
   FeedbackRequestBody

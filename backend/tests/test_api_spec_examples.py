@@ -70,7 +70,7 @@ def test_all_api_spec_json_examples_match_pydantic_models() -> None:
     content = API_SPEC_PATH.read_text(encoding="utf-8")
     blocks = JSON_BLOCK_PATTERN.findall(content)
 
-    assert len(blocks) == 27
+    assert len(blocks) == 28
 
     for block in blocks:
         data = json.loads(block)

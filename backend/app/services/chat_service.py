@@ -24,7 +24,11 @@ from backend.app.schemas import (
     RequestMetrics,
     RetrievedMemory,
 )
-from backend.app.services.errors import ResourceConflictError, ResourceNotFoundError
+from backend.app.services.errors import (
+    ModelNotReadyError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
 from backend.app.services.memory_service import MemoryService
 from backend.app.services.metrics_service import MetricsService
 from backend.app.services.reminder_service import ReminderService
@@ -74,6 +78,8 @@ class ChatService:
         *,
         idempotency_key: str | None = None,
     ) -> ChatResponse:
+        if request.image is not None:
+            raise ModelNotReadyError("图片理解服务尚未接入")
         overall_started = perf_counter()
         execution = self._begin(request, idempotency_key=idempotency_key)
         if execution.cached_response is not None:

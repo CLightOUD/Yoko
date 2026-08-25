@@ -199,6 +199,26 @@ def test_validation_and_service_errors_use_error_response(client) -> None:
     assert missing.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
 
 
+def test_chat_rejects_images_until_the_vision_service_is_connected(
+    client, api_app
+) -> None:
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "帮我看看这张图片",
+            "image": {
+                "media_type": "image/jpeg",
+                "data": "AA==",
+                "detail": "low",
+            },
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "MODEL_UNAVAILABLE"
+    assert api_app.state.test_agent.call_count == 0
+
+
 def test_validation_error_does_not_echo_raw_input(client) -> None:
     secret_like_value = "invalid key with secret material"
     response = client.post(

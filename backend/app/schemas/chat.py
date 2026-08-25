@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -24,12 +26,42 @@ from backend.app.schemas.memory import MemoryChange, MemoryScope, TaskType
 ChatStatus = Literal["completed", "needs_clarification", "partial"]
 ToolStatus = Literal["success", "failed"]
 ChatMessage = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
+ImageMediaType = Literal["image/jpeg", "image/png", "image/webp"]
+ImageDetail = Literal["low", "original"]
+MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_CHAT_IMAGE_BASE64_LENGTH = 4 * ((MAX_CHAT_IMAGE_BYTES + 2) // 3)
+ImageBase64 = Annotated[
+    str,
+    StringConstraints(min_length=4, max_length=MAX_CHAT_IMAGE_BASE64_LENGTH),
+]
+
+
+class ChatImageInput(APIModel):
+    media_type: ImageMediaType
+    data: ImageBase64
+    detail: ImageDetail = "original"
+
+    @field_validator("data")
+    @classmethod
+    def validate_base64_data(cls, value: str) -> str:
+        if value.startswith("data:"):
+            raise ValueError("data must contain raw base64 without a data URL prefix")
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("data must be valid base64") from exc
+        if not decoded:
+            raise ValueError("image data must not be empty")
+        if len(decoded) > MAX_CHAT_IMAGE_BYTES:
+            raise ValueError("decoded image must not exceed 5 MiB")
+        return value
 
 
 class ChatRequestBody(SessionBoundAPIModel):
     conversation_id: UUID | None = None
     message: ChatMessage
     timezone: str | None = None
+    image: ChatImageInput | None = None
 
     @field_validator("timezone")
     @classmethod

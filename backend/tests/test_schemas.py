@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app import schemas
+from backend.app.schemas.chat import MAX_CHAT_IMAGE_BYTES
 
 
 def memory_payload() -> dict[str, object]:
@@ -130,6 +132,51 @@ def test_chat_request_rejects_invalid_timezone() -> None:
             user_id="demo-user",
             message="提醒我吃药",
             timezone="Mars/Olympus",
+        )
+
+
+def test_chat_request_accepts_one_bounded_image_without_breaking_text_only() -> None:
+    text_only = schemas.ChatRequestBody(message="你好")
+    assert text_only.image is None
+
+    image_data = base64.b64encode(b"small-image-placeholder").decode("ascii")
+    request = schemas.ChatRequestBody(
+        message="帮我看看图片上的字",
+        image={"media_type": "image/png", "data": image_data},
+    )
+
+    assert request.image is not None
+    assert request.image.media_type == "image/png"
+    assert request.image.detail == "original"
+    assert request.image.data == image_data
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        {"media_type": "image/gif", "data": "AA=="},
+        {"media_type": "image/jpeg", "data": "not-base64"},
+        {
+            "media_type": "image/jpeg",
+            "data": "data:image/jpeg;base64,AA==",
+        },
+        {"media_type": "image/png", "data": "AA==", "detail": "auto"},
+    ],
+)
+def test_chat_request_rejects_unsupported_or_malformed_images(image) -> None:
+    with pytest.raises(ValidationError):
+        schemas.ChatRequestBody(message="查看图片", image=image)
+
+
+def test_chat_request_rejects_image_larger_than_five_mib() -> None:
+    oversized = base64.b64encode(b"x" * (MAX_CHAT_IMAGE_BYTES + 1)).decode(
+        "ascii"
+    )
+
+    with pytest.raises(ValidationError):
+        schemas.ChatRequestBody(
+            message="查看图片",
+            image={"media_type": "image/jpeg", "data": oversized},
         )
 
 

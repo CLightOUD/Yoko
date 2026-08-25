@@ -10,6 +10,7 @@ from backend.app.schemas.auth import (
     UserView,
 )
 from backend.app.schemas.chat import (
+    ChatImageInput,
     ChatRequest,
     ChatRequestBody,
     ChatResponse,
@@ -67,6 +68,7 @@ __all__ = [
     "AccountDeleteResponse",
     "AccountExportResponse",
     "ChangePasswordRequest",
+    "ChatImageInput",
     "ChatRequest",
     "ChatRequestBody",
     "ChatResponse",

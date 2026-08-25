@@ -20,7 +20,7 @@ CurrentUserDependency = Annotated[UserView, Depends(get_current_user)]
 @router.post(
     "/chat",
     response_model=ChatResponse,
-    responses=error_responses(400, 401, 403, 404, 409, 422, 500, 502),
+    responses=error_responses(400, 401, 403, 404, 409, 422, 500, 502, 503),
     dependencies=[Depends(require_trusted_origin)],
 )
 def chat(
