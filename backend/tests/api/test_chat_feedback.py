@@ -109,6 +109,7 @@ def test_chat_statuses_and_agent_tool_side_effect(client) -> None:
     )
     assert clarification.json()["status"] == "needs_clarification"
     assert clarification.json()["tool_calls"] == []
+    assert clarification.json()["sources"] == []
 
     partial = client.post(
         "/api/chat",
@@ -125,6 +126,25 @@ def test_chat_statuses_and_agent_tool_side_effect(client) -> None:
     assert created.json()["tool_calls"][0]["status"] == "success"
     reminders = client.get("/api/reminders", params={"user_id": "demo-user"})
     assert reminders.json()["total"] == 1
+
+
+def test_chat_returns_web_sources_from_agent(client) -> None:
+    response = client.post(
+        "/api/chat",
+        json={"user_id": "demo-user", "message": "联网查询"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool_calls"][0]["tool_name"] == "web_search"
+    assert payload["sources"] == [
+        {
+            "title": "公开信息",
+            "url": "https://example.gov.cn/information",
+            "snippet": "公开信息摘要",
+            "source": "bing",
+        }
+    ]
 
 
 def test_feedback_rejects_request_owned_by_no_user(client) -> None:

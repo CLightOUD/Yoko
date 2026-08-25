@@ -11,7 +11,7 @@ from backend.app.agent import AgentRunResult
 from backend.app.agent.preferences import extract_preferences
 from backend.app.database import Database
 from backend.app.main import create_app
-from backend.app.schemas import ReminderCreateRequest, ToolCallView
+from backend.app.schemas import ReminderCreateRequest, ToolCallView, WebSource
 
 
 class FakeAgent:
@@ -34,6 +34,7 @@ class FakeAgent:
         self.last_history = history
         used_ids = [memories[0].id] if memories else []
         tool_calls = []
+        sources = []
         status = "completed"
         if "信息不足" in message:
             status = "needs_clarification"
@@ -68,6 +69,23 @@ class FakeAgent:
                     latency_ms=1,
                 )
             ]
+        elif "联网查询" in message:
+            reply = "已查询公开信息。"
+            tool_calls = [
+                ToolCallView(
+                    tool_name="web_search",
+                    status="success",
+                    summary="模拟必应查询",
+                    latency_ms=1,
+                )
+            ]
+            sources = [
+                WebSource(
+                    title="公开信息",
+                    url="https://example.gov.cn/information",
+                    snippet="公开信息摘要",
+                )
+            ]
         elif memories:
             reply = f"已参考您的偏好：{memories[0].display_text}。"
         else:
@@ -84,6 +102,7 @@ class FakeAgent:
             model_ms=2,
             tool_ms=sum(call.latency_ms for call in tool_calls),
             memory_candidates=extract_preferences(message),
+            sources=sources,
         )
 
 

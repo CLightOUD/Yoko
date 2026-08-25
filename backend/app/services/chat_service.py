@@ -303,6 +303,7 @@ class ChatService:
                 reply=agent_result.reply,
                 retrieved_memories=retrieved_memories,
                 tool_calls=agent_result.tool_calls,
+                sources=agent_result.sources,
                 memory_changes=memory_changes,
                 metrics=metrics,
             )

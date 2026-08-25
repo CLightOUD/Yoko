@@ -12,6 +12,7 @@ from backend.app.schemas.chat import (
     RequestMetrics,
     RetrievedMemory,
     ToolCallView,
+    WebSource,
 )
 from backend.app.schemas.common import (
     DeleteResponse,
@@ -100,4 +101,5 @@ __all__ = [
     "RetrievedMemory",
     "ToolCallView",
     "UserView",
+    "WebSource",
 ]

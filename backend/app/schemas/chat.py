@@ -60,6 +60,13 @@ class ToolCallView(APIModel):
     latency_ms: NonNegativeInt
 
 
+class WebSource(APIModel):
+    title: str = Field(min_length=1, max_length=200)
+    url: str = Field(min_length=10, max_length=2048, pattern=r"^https?://")
+    snippet: str = Field(max_length=500)
+    source: Literal["bing"] = "bing"
+
+
 class RequestMetrics(APIModel):
     model_call_count: NonNegativeInt
     input_tokens: NonNegativeInt | None
@@ -93,6 +100,7 @@ class ChatResponse(APIModel):
     reply: str = Field(min_length=1, max_length=10_000)
     retrieved_memories: list[RetrievedMemory] = Field(max_length=3)
     tool_calls: list[ToolCallView]
+    sources: list[WebSource] = Field(default_factory=list, max_length=5)
     memory_changes: list[MemoryChange]
     metrics: RequestMetrics
 

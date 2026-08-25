@@ -70,6 +70,12 @@ database and does not modify `backend/data/app.db`:
 python -m backend.tests.evaluation.run_live_model_smoke
 ```
 
+运行一次真实模型加必应联网的端到端冒烟测试：
+
+```powershell
+python -m backend.tests.evaluation.run_live_web_search_smoke
+```
+
 Run the strict live evaluation for typos, ambiguous requests, corrections,
 prompt injection, medication safety, idempotency and memory overrides:
 
@@ -172,6 +178,15 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 最终事实来源。只有主 Agent 明确调用工具形成计划，且最终决定与语义帧一致时才会
 写入。`preferred_time` 可以补全缺失钟点，但关键词、正则和固定错别字替换不会直接
 创建提醒；长期偏好候选由主 Agent 的结构化结果返回。
+
+当用户明确要求查询公开网络信息，或问题依赖会变化的外部事实时，语义预处理模型会
+生成独立、去隐私化的搜索词，由后端抓取必应前 5 条自然搜索结果。搜索使用现有
+`httpx` 与标准库解析器，不需要额外搜索 API 密钥。原始结果会先经过独立的结构化模型
+相关性门禁，只有能直接支持当前问题的证据才会交给主 Agent，并通过 `sources` 返回
+标题、链接和摘要。第一次结果全部无关时，门禁可以生成一个更宽但仍聚焦的检索词，
+最多额外搜索并筛选一次。搜索超时、限流、验证码、页面结构变化，或两次结果仍与问题
+没有直接关系时，聊天接口返回 `partial` 并明确说明无法核实，不会用模型旧知识冒充
+实时结果。
 
 Agent 内部提供提醒查询、创建、修改和删除工具。核对、修改或删除前会先读取真实
 提醒状态；只读查询不出现在公共 `tool_calls` 中。创建和改时间还会校验明确钟点或

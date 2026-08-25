@@ -332,7 +332,7 @@ status: active | completed | deleted
 }
 ```
 
-`memory_tokens` 是注入模型上下文的记忆 Token 数，用于直接衡量记忆成本。`total_ms` 应包含检索、模型和工具执行时间。聊天请求的模型指标合并语义预处理和主 Agent 阶段；常规请求至少包含这两个模型调用，工具循环或纠错可能继续增加调用次数。
+`memory_tokens` 是注入模型上下文的记忆 Token 数，用于直接衡量记忆成本。`total_ms` 应包含检索、模型和工具执行时间。聊天请求的模型指标合并语义预处理、联网证据筛选（仅联网轮次）和主 Agent 阶段；常规请求至少包含预处理与主 Agent 两个模型调用，联网请求至少再增加一次证据筛选调用。若第一次结果全部无关，允许重写检索词并再筛选一次，因此最多再增加一次模型调用；工具循环或纠错也可能继续增加调用次数。
 
 `RequestMetrics` 的计数与耗时字段全部返回。`input_tokens`、`output_tokens` 在供应商不提供统计时为 `null`；其余字段不可空，未发生对应操作时返回 `0`。
 
@@ -637,6 +637,7 @@ status: completed | needs_clarification | partial
 reply: string
 retrieved_memories: RetrievedMemory[]
 tool_calls: ToolCallView[]
+sources: WebSource[]
 memory_changes: MemoryChange[]
 metrics: RequestMetrics
 ```
@@ -666,6 +667,7 @@ metrics: RequestMetrics
       "latency_ms": 12
     }
   ],
+  "sources": [],
   "memory_changes": [],
   "metrics": {
     "model_call_count": 2,
@@ -682,7 +684,11 @@ metrics: RequestMetrics
 }
 ```
 
-`tool_calls[].status` 可为 `success` 或 `failed`。不得把失败的提醒工具描述为创建成功。
+`tool_calls[].status` 可为 `success` 或 `failed`。不得把失败的提醒或联网工具描述为成功。
+
+`sources` 始终返回数组。未联网、联网失败或原始结果未通过相关性门禁时为空；联网成功时最多 5 项，每项包含 `title`、`url`、`snippet` 和固定值 `source="bing"`。字段长度分别不超过 200、2048 和 500 字符，URL 只允许 HTTP 或 HTTPS。该字段为向后兼容的响应扩展，旧客户端可以忽略。
+
+语义预处理模型通过 `requires_web`、`search_query`、`web_confidence` 和 `web_reason` 判断是否需要公开网络信息。提醒操作、本地提醒查询、日常陪伴和个人记忆不会仅因出现某个关键词而联网。发送给搜索引擎的是最多 160 字符的独立检索词，不是完整对话；运行时还会移除常见手机号、邮箱和身份证号。必应原始结果按不可信外部资料处理，并由独立结构化模型按当前问题筛选；仅共享地名、机构名或宽泛关键词的页面不得进入 `sources`。第一次结果全部无关时，筛选模型可以给出一个更宽但不改变主题的检索词，后端最多重试一次。没有直接相关证据时 `web_search` 标记为 `failed`、响应 `status=partial`，运行时用固定的自然失败回复覆盖主 Agent 可能补充的未接地细节。结果中的指令不能被执行或覆盖系统规则。
 
 Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
@@ -1267,7 +1273,7 @@ metrics.py
 
 - `/api/chat` 负责串联最多 3 条候选记忆检索、结构化语义预处理、主 Agent 判断和工具调用。
 - 语义预处理只生成 `SemanticFrame`，不能调用工具；主 Agent 写工具只暂存计划，最终通过语义帧、结构化决定和确定性校验后执行。
-- `model_call_count`、`input_tokens`、`output_tokens` 和 `model_ms` 合并预处理与主 Agent 阶段；当前 API 不单独返回预处理阶段指标。
+- `model_call_count`、`input_tokens`、`output_tokens` 和 `model_ms` 合并预处理、联网证据筛选（联网轮次一至两次）与主 Agent 阶段；当前 API 不单独返回各阶段指标。
 - 候选记忆不再由关键词任务分类硬过滤；Agent 结合完整语义判断相关性并仅标记实际使用项。
 - 创建提醒必须由模型明确调用工具触发，关键词、正则或错别字替换不得直接产生写操作。
 - Agent 只返回简短结果、工具摘要和记忆使用标记，不暴露隐藏推理过程。

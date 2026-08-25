@@ -12,11 +12,10 @@ from backend.app.main import create_app
 
 
 def main() -> int:
-    # Validate configuration before constructing the API so failures are explicit.
     LangChainAgent._build_model()
-    with TemporaryDirectory(prefix="yoko-live-smoke-") as directory:
+    with TemporaryDirectory(prefix="yoko-live-web-search-") as directory:
         app = create_app(
-            database=Database(Path(directory) / "smoke.db"),
+            database=Database(Path(directory) / "web-search.db"),
             agent=LangChainAgent(),
         )
         with TestClient(
@@ -27,9 +26,9 @@ def main() -> int:
             registered = client.post(
                 "/api/auth/register",
                 json={
-                    "username": "live_smoke_user",
-                    "password": "live-smoke-password-2026",
-                    "display_name": "实时冒烟用户",
+                    "username": "live_web_search_user",
+                    "password": "live-web-search-password-2026",
+                    "display_name": "联网冒烟用户",
                     "timezone": "Asia/Shanghai",
                 },
             )
@@ -39,7 +38,7 @@ def main() -> int:
             response = client.post(
                 "/api/chat",
                 json={
-                    "message": "请用一句简短的中文向我问好，不要创建提醒。",
+                    "message": "请联网查询 Python 官方文档主页，简单说明并给出来源。",
                     "timezone": "Asia/Shanghai",
                 },
             )
@@ -48,19 +47,26 @@ def main() -> int:
     if response.status_code != 200:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
-    if payload["metrics"]["model_call_count"] < 2 or not payload["reply"].strip():
-        print("真实模型响应缺少语义预处理、主 Agent 调用记录或有效回复。")
-        return 1
-    if payload["sources"] or any(
-        call["tool_name"] == "web_search" for call in payload["tool_calls"]
+    web_calls = [
+        call
+        for call in payload["tool_calls"]
+        if call["tool_name"] == "web_search"
+    ]
+    if (
+        payload["status"] != "completed"
+        or len(web_calls) != 1
+        or web_calls[0]["status"] != "success"
+        or not payload["sources"]
     ):
-        print("普通问候不应触发联网查询。")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
     print(
         json.dumps(
             {
                 "status": payload["status"],
                 "reply": payload["reply"],
+                "web_search": web_calls[0],
+                "sources": payload["sources"],
                 "model_call_count": payload["metrics"]["model_call_count"],
                 "input_tokens": payload["metrics"]["input_tokens"],
                 "output_tokens": payload["metrics"]["output_tokens"],
