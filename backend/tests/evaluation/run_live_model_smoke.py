@@ -19,11 +19,26 @@ def main() -> int:
             database=Database(Path(directory) / "smoke.db"),
             agent=LangChainAgent(),
         )
-        with TestClient(app, raise_server_exceptions=False) as client:
+        with TestClient(
+            app,
+            raise_server_exceptions=False,
+            headers={"Origin": "http://127.0.0.1:5173"},
+        ) as client:
+            registered = client.post(
+                "/api/auth/register",
+                json={
+                    "username": "live_smoke_user",
+                    "password": "live-smoke-password-2026",
+                    "display_name": "实时冒烟用户",
+                    "timezone": "Asia/Shanghai",
+                },
+            )
+            if registered.status_code != 201:
+                print(json.dumps(registered.json(), ensure_ascii=False, indent=2))
+                return 1
             response = client.post(
                 "/api/chat",
                 json={
-                    "user_id": "demo-user",
                     "message": "请用一句简短的中文向我问好，不要创建提醒。",
                     "timezone": "Asia/Shanghai",
                 },
@@ -33,8 +48,8 @@ def main() -> int:
     if response.status_code != 200:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
-    if payload["metrics"]["model_call_count"] < 1 or not payload["reply"].strip():
-        print("真实模型响应缺少有效回复或模型调用记录。")
+    if payload["metrics"]["model_call_count"] < 2 or not payload["reply"].strip():
+        print("真实模型响应缺少语义预处理、主 Agent 调用记录或有效回复。")
         return 1
     print(
         json.dumps(

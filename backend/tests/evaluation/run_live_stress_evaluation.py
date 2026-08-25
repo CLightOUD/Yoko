@@ -64,7 +64,6 @@ class Scenario:
         if self.user_id is None:
             raise RuntimeError("Scenario must be entered before use")
         payload = {
-            "user_id": self.user_id,
             "message": message,
             "timezone": "Asia/Shanghai",
         }
@@ -81,9 +80,7 @@ class Scenario:
     def reminders(self) -> list[dict]:
         if self.user_id is None:
             raise RuntimeError("Scenario must be entered before use")
-        response = self.client.get(
-            "/api/reminders", params={"user_id": self.user_id}
-        )
+        response = self.client.get("/api/reminders")
         if response.status_code != 200:
             raise AssertionError(f"提醒查询失败: {response.json()}")
         return response.json()["items"]
@@ -91,9 +88,7 @@ class Scenario:
     def memories(self) -> list[dict]:
         if self.user_id is None:
             raise RuntimeError("Scenario must be entered before use")
-        response = self.client.get(
-            "/api/memories", params={"user_id": self.user_id}
-        )
+        response = self.client.get("/api/memories")
         if response.status_code != 200:
             raise AssertionError(f"记忆查询失败: {response.json()}")
         return response.json()["items"]

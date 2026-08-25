@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from backend.app.schemas import ChatRequest
+from backend.app.services.errors import ModelUnavailableError
 
 
 def test_feedback_memory_is_retrieved_and_used_by_later_chat(client) -> None:
@@ -247,6 +248,90 @@ def test_failed_chat_retry_reuses_user_message_and_request_id(client, monkeypatc
     assert request_row["status"] == "completed"
     assert request_row["attempt_count"] == 2
     assert user_message_count == 1
+
+
+def test_preprocess_failure_returns_safe_502_without_side_effects_and_can_retry(
+    client,
+    monkeypatch,
+) -> None:
+    agent = client.app.state.test_agent
+    original_run = agent.run
+    attempts = 0
+
+    def fail_preprocess_once(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ModelUnavailableError(
+                "语义预处理失败：provider payload must not reach the client"
+            )
+        return original_run(**kwargs)
+
+    monkeypatch.setattr(agent, "run", fail_preprocess_once)
+    payload = {"message": "明天晚上八点提醒我吃药"}
+    headers = {"Idempotency-Key": "chat-preprocess-failure-0001"}
+
+    failed = client.post("/api/chat", json=payload, headers=headers)
+
+    assert failed.status_code == 502
+    assert failed.json()["error"] == {
+        "code": "MODEL_UNAVAILABLE",
+        "message": "模型服务暂不可用，请稍后重试",
+        "details": None,
+    }
+    assert "provider payload" not in failed.text
+
+    with client.app.state.database.connection() as connection:
+        request_row = connection.execute(
+            """
+            SELECT id, status, attempt_count FROM chat_requests
+            WHERE idempotency_key = ?
+            """,
+            (headers["Idempotency-Key"],),
+        ).fetchone()
+        user_message_count = connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE request_id = ? AND role = 'user'",
+            (request_row["id"],),
+        ).fetchone()[0]
+        assistant_message_count = connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE request_id = ? AND role = 'assistant'",
+            (request_row["id"],),
+        ).fetchone()[0]
+        reminder_count = connection.execute(
+            "SELECT COUNT(*) FROM reminders WHERE user_id = ?",
+            (client.app.state.test_user_id,),
+        ).fetchone()[0]
+        metric_count = connection.execute(
+            "SELECT COUNT(*) FROM request_metrics WHERE request_id = ?",
+            (request_row["id"],),
+        ).fetchone()[0]
+
+    assert dict(request_row) == {
+        "id": request_row["id"],
+        "status": "failed",
+        "attempt_count": 1,
+    }
+    assert user_message_count == 1
+    assert assistant_message_count == 0
+    assert reminder_count == 0
+    assert metric_count == 0
+
+    recovered = client.post("/api/chat", json=payload, headers=headers)
+
+    assert recovered.status_code == 200
+    assert recovered.json()["request_id"] == request_row["id"]
+    with client.app.state.database.connection() as connection:
+        recovered_row = connection.execute(
+            "SELECT status, attempt_count FROM chat_requests WHERE id = ?",
+            (request_row["id"],),
+        ).fetchone()
+        recovered_user_messages = connection.execute(
+            "SELECT COUNT(*) FROM messages WHERE request_id = ? AND role = 'user'",
+            (request_row["id"],),
+        ).fetchone()[0]
+
+    assert dict(recovered_row) == {"status": "completed", "attempt_count": 2}
+    assert recovered_user_messages == 1
 
 
 def test_chat_finalization_rolls_back_and_can_retry(client, monkeypatch) -> None:

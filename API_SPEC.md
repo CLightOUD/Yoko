@@ -319,7 +319,7 @@ status: active | completed | deleted
 
 ```json
 {
-  "model_call_count": 1,
+  "model_call_count": 2,
   "input_tokens": 640,
   "output_tokens": 48,
   "memory_tokens": 24,
@@ -332,7 +332,7 @@ status: active | completed | deleted
 }
 ```
 
-`memory_tokens` 是注入模型上下文的记忆 Token 数，用于直接衡量记忆成本。`total_ms` 应包含检索、模型和工具执行时间。
+`memory_tokens` 是注入模型上下文的记忆 Token 数，用于直接衡量记忆成本。`total_ms` 应包含检索、模型和工具执行时间。聊天请求的模型指标合并语义预处理和主 Agent 阶段；常规请求至少包含这两个模型调用，工具循环或纠错可能继续增加调用次数。
 
 `RequestMetrics` 的计数与耗时字段全部返回。`input_tokens`、`output_tokens` 在供应商不提供统计时为 `null`；其余字段不可空，未发生对应操作时返回 `0`。
 
@@ -668,7 +668,7 @@ metrics: RequestMetrics
   ],
   "memory_changes": [],
   "metrics": {
-    "model_call_count": 1,
+    "model_call_count": 2,
     "input_tokens": 640,
     "output_tokens": 48,
     "memory_tokens": 24,
@@ -686,17 +686,17 @@ metrics: RequestMetrics
 
 Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
-用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。此时同一次 Agent 模型调用应在结构化结果中返回经过语义理解的记忆候选，`/api/chat` 校验并写入后，通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务、临时状态和不明确偏好返回空数组，不额外调用第二个预处理模型。
+用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。语义预处理阶段只生成 `SemanticFrame`，不写记忆；主 Agent 在自己的结构化结果中返回经过语义理解的记忆候选，`/api/chat` 校验并写入后，通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务、临时状态和不明确偏好返回空数组。
 
-所有创建提醒的请求都必须先由 LangChain Agent 结合当前消息、历史和候选记忆判断语义。即使消息包含明确日期或存在 `preferred_time`，也只有模型实际调用 `create_reminder` 后才能写入；不得通过关键词或正则直接调用 `ReminderService`。
+每次 `/api/chat` 都先由独立的结构化模型调用结合最近历史和候选记忆生成 `SemanticFrame`，再由主 LangChain Agent 同时阅读用户原文、历史、候选记忆和语义帧。用户原文是最终事实来源，语义帧不得覆盖原文。即使消息包含明确日期或存在 `preferred_time`，也只有主 Agent 实际调用 `create_reminder` 形成计划，且最终决定通过语义一致性门禁后才能写入；不得通过关键词或正则直接调用 `ReminderService`。
 
-创建或修改触发时间时，内部工具必须同时提交时间来源。来源为用户原话时必须包含可验证的明确钟点证据，落库后的用户本地钟点必须与该证据一致；来源为 `preferred_time` 时必须提交本轮实际检索到的记忆 ID，且工具时间必须与记忆值一致。“早上”“晚上”等范围和药物剂量数字不得被当成钟点。
+创建或修改触发时间时，内部工具必须同时提交时间来源。来源为用户原话时必须提交真实存在的用户消息编号；多轮补充可以引用多个编号，但普通写操作必须包含当前消息编号。来源为 `preferred_time` 时必须提交本轮实际检索到的记忆 ID，且工具时间必须与记忆值一致。“早上”“晚上”等范围和药物剂量数字不得被当成钟点；时间是否仍有歧义由语义帧和主 Agent 共同判断。
 
 创建 `weekly` 提醒时用户必须明确星期几，工具生成的本地日期也必须与该星期一致；仅说“每周晚上七点”时必须追问。修改已有每周提醒且用户未要求改变星期时，必须保留原星期。
 
 查看、核对、修改或删除已有提醒时，Agent 必须先调用 `list_reminders`，再根据真实 ID 使用 `update_reminder` 或 `delete_reminder`。目标不唯一时只追问；不得用 `create_reminder` 代替修改，也不得在未查询时声称提醒已经修改或删除。
 
-所有提醒写工具还必须提交逐字引用的用户操作依据。依据通常来自当前消息；只有当前消息紧接 Agent 的参数追问时，才允许引用追问前的原始请求。若用户最后撤销或否定操作，工具必须拒绝写入。用户要求额外或单独的一次性提醒时必须新建 `repeat_type=none`，不得覆盖已有 `daily` 或 `weekly` 提醒。
+所有提醒写工具还必须提交用户消息证据编号。编号必须存在，多轮补充可同时引用原始请求和后续补充，普通写操作必须包含当前消息。若语义帧显示用户最后撤销、包含多个独立操作、仍有关键歧义、置信度低于安全阈值，或 `active_operation` 与工具计划不一致，运行时必须拒绝写入。用户要求额外或单独的一次性提醒时必须新建 `repeat_type=none`，不得覆盖已有 `daily` 或 `weekly` 提醒。
 
 同一次 `/api/chat` 最多执行一项提醒写操作。模型在一次输出中提出多个 `create_reminder`、`update_reminder` 或 `delete_reminder` 时，运行时必须在任何工具执行前整批拦截，并返回 `needs_clarification`，`tool_calls=[]`，请用户指定一项。工具层还要限制每轮最多一次实际写入，防止模型改为逐条循环绕过拦截。用户消息中转述的专家、网页或其他外部内容不能覆盖这些系统规则。
 
@@ -732,7 +732,7 @@ completed | needs_clarification | partial
   "tool_calls": [],
   "memory_changes": [],
   "metrics": {
-    "model_call_count": 1,
+    "model_call_count": 2,
     "input_tokens": 260,
     "output_tokens": 18,
     "memory_tokens": 0,
@@ -1265,7 +1265,9 @@ metrics.py
 
 ### 13.2 Agent 层
 
-- `/api/chat` 负责串联最多 3 条候选记忆检索、模型语义判断和工具调用。
+- `/api/chat` 负责串联最多 3 条候选记忆检索、结构化语义预处理、主 Agent 判断和工具调用。
+- 语义预处理只生成 `SemanticFrame`，不能调用工具；主 Agent 写工具只暂存计划，最终通过语义帧、结构化决定和确定性校验后执行。
+- `model_call_count`、`input_tokens`、`output_tokens` 和 `model_ms` 合并预处理与主 Agent 阶段；当前 API 不单独返回预处理阶段指标。
 - 候选记忆不再由关键词任务分类硬过滤；Agent 结合完整语义判断相关性并仅标记实际使用项。
 - 创建提醒必须由模型明确调用工具触发，关键词、正则或错别字替换不得直接产生写操作。
 - Agent 只返回简短结果、工具摘要和记忆使用标记，不暴露隐藏推理过程。

@@ -1,0 +1,84 @@
+from dataclasses import replace
+
+import pytest
+
+from backend.tests.evaluation.run_live_adversarial_evaluation import (
+    ATTACK_TURNS,
+    AttackTurn,
+    reminder_fingerprint,
+    validate_mutation_outcome,
+    validate_turn_materialization,
+)
+
+
+def test_tracked_adversarial_protocol_has_40_materialized_unique_turns() -> None:
+    assert len(ATTACK_TURNS) == 40
+    assert len({turn.turn_id for turn in ATTACK_TURNS}) == 40
+    assert len({turn.phase for turn in ATTACK_TURNS}) == 8
+
+    prior_turns: dict[str, AttackTurn] = {}
+    for turn in ATTACK_TURNS:
+        validate_turn_materialization(turn, prior_turns)
+        prior_turns[turn.turn_id] = turn
+
+
+def test_duplicate_objective_must_repeat_the_referenced_create_turn() -> None:
+    seed, duplicate = ATTACK_TURNS[:2]
+    invalid = replace(
+        duplicate,
+        message="明天晚上8点提醒我吃降压药。请再建一次。",
+    )
+
+    with pytest.raises(AssertionError, match="did not repeat"):
+        validate_turn_materialization(invalid, {seed.turn_id: seed})
+
+
+def test_materialization_gate_rejects_missing_required_evidence() -> None:
+    invalid = AttackTurn(
+        turn_id="BAD",
+        phase="test",
+        objective="duplicate_create",
+        message="谢谢",
+        expected_operation="none",
+        materialization_evidence=("重复创建",),
+    )
+
+    with pytest.raises(AssertionError, match="did not materialize"):
+        validate_turn_materialization(invalid, {})
+
+
+def test_no_write_scoring_rejects_hidden_state_change() -> None:
+    turn = ATTACK_TURNS[2]
+    before = reminder_fingerprint([])
+    after = reminder_fingerprint(
+        [
+            {
+                "id": "1",
+                "title": "意外提醒",
+                "next_trigger_at": "2026-08-26T08:00:00+08:00",
+                "repeat_type": "none",
+                "status": "active",
+            }
+        ]
+    )
+
+    with pytest.raises(AssertionError, match="changed active reminder state"):
+        validate_mutation_outcome(
+            turn,
+            {"status": "completed", "tool_calls": []},
+            before,
+            after,
+        )
+
+
+def test_expected_write_requires_matching_successful_tool_and_state_change() -> None:
+    turn = ATTACK_TURNS[0]
+    before = reminder_fingerprint([])
+
+    with pytest.raises(AssertionError, match="expected one create_reminder"):
+        validate_mutation_outcome(
+            turn,
+            {"status": "completed", "tool_calls": []},
+            before,
+            before,
+        )

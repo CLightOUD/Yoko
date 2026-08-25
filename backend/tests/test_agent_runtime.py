@@ -113,6 +113,34 @@ def test_semantic_preprocessor_returns_structured_frame_and_usage() -> None:
     assert '"label": "U1"' in calls[0][1].content
 
 
+@pytest.mark.parametrize("failure_mode", ["invoke", "parse"])
+def test_semantic_preprocessor_fails_closed_on_model_or_parse_error(
+    failure_mode: str,
+) -> None:
+    class StructuredModel:
+        def invoke(self, messages):
+            if failure_mode == "invoke":
+                raise RuntimeError("provider detail must stay internal")
+            return {
+                "raw": AIMessage(content=""),
+                "parsed": None,
+                "parsing_error": "malformed provider payload",
+            }
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            return StructuredModel()
+
+    with pytest.raises(ModelUnavailableError, match="语义预处理"):
+        ORIGINAL_PREPROCESS_SEMANTICS(
+            model=FakeModel(),
+            now=datetime(2026, 8, 24, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            timezone="Asia/Shanghai",
+            memories=[],
+            history=[{"role": "user", "content": "明天晚上八点提醒我吃药"}],
+        )
+
+
 @pytest.mark.parametrize(
     "message",
     [
@@ -406,6 +434,88 @@ def test_langchain_agent_collects_usage_without_network(monkeypatch, tmp_path) -
     assert result.input_tokens == 30
     assert result.output_tokens == 8
     assert result.memory_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("preprocess_usage", "expected_input", "expected_output"),
+    [
+        (
+            {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            42,
+            12,
+        ),
+        (None, None, None),
+    ],
+)
+def test_langchain_agent_merges_preprocess_and_main_model_metrics(
+    monkeypatch,
+    tmp_path,
+    preprocess_usage,
+    expected_input,
+    expected_output,
+) -> None:
+    preprocess_message = AIMessage(content="", usage_metadata=preprocess_usage)
+
+    def preprocess(**kwargs) -> SemanticPreprocessResult:
+        return SemanticPreprocessResult(
+            frame=SemanticFrame(
+                normalized_text="普通问候，不处理提醒",
+                confidence=0.99,
+            ),
+            model_messages=[preprocess_message],
+            model_ms=9,
+            enforce=True,
+        )
+
+    class FakeGraph:
+        def invoke(self, state):
+            return {
+                "messages": [
+                    *state["messages"],
+                    AIMessage(
+                        content="",
+                        usage_metadata={
+                            "input_tokens": 30,
+                            "output_tokens": 8,
+                            "total_tokens": 38,
+                        },
+                    ),
+                ],
+                "structured_response": {
+                    "status": "completed",
+                    "reply": "您好。",
+                    "reminder_operation": "none",
+                },
+            }
+
+    monkeypatch.setattr(LangChainAgent, "_build_model", staticmethod(lambda: object()))
+    monkeypatch.setattr(
+        LangChainAgent,
+        "_preprocess_semantics",
+        staticmethod(preprocess),
+    )
+    monkeypatch.setattr(
+        "backend.app.agent.runtime.create_agent",
+        lambda **kwargs: FakeGraph(),
+    )
+    database = Database(tmp_path / "merged-model-metrics.db")
+    database.initialize()
+
+    result = LangChainAgent().run(
+        user_id="demo-user",
+        message="你好",
+        timezone="Asia/Shanghai",
+        now=datetime.now(UTC) + timedelta(seconds=1),
+        memories=[],
+        history=[{"role": "user", "content": "你好"}],
+        reminder_service=ReminderService(database),
+    )
+
+    assert result.status == "completed"
+    assert result.model_call_count == 2
+    assert result.input_tokens == expected_input
+    assert result.output_tokens == expected_output
+    assert result.model_ms >= 9
 
 
 def test_langchain_agent_tool_calls_service_without_http(monkeypatch, tmp_path) -> None:

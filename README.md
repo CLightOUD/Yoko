@@ -49,11 +49,13 @@ require the configured frontend origin or the API's own origin.
 the database and migration version. Chat clients may send an `Idempotency-Key`
 header and must reuse it when retrying the same request.
 
-Reminder intent and retrieved `preferred_time` memories are interpreted by the
-Agent model before any write tool can run. A mutation guard blocks multiple
-create, update, or delete calls in one request before execution, and each write
-tool verifies a verbatim user-intent quote. Batch changes are handled one item
-at a time to limit accidental or prompt-injected writes.
+Each chat turn first runs a structured semantic-preprocessing model call and
+then the main Agent. The resulting `SemanticFrame` marks the final operation,
+self-corrections, cancellation, ambiguity, evidence message numbers and
+confidence. Reminder writes are staged and execute only after the final Agent
+decision agrees with that frame. A deterministic guard also verifies real
+message numbers, at most one mutation, list-before-update/delete and retrieved
+`preferred_time` memory IDs. The original user text remains the source of truth.
 
 Run tests:
 
@@ -80,6 +82,14 @@ and preference fields contain realistic input errors and corrections:
 
 ```powershell
 python -m backend.tests.evaluation.run_live_dialogue_evaluation
+```
+
+Run the tracked 40-turn adversarial protocol only after approving real-model
+costs. It validates that each attack objective was actually materialized before
+scoring and uses a temporary registered account and database:
+
+```powershell
+python -m backend.tests.evaluation.run_live_adversarial_evaluation
 ```
 
 ## Frontend
@@ -157,20 +167,22 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 `GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接和迁移版本。
 聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
 
-提醒创建采用模型语义门禁：Agent 先结合当前消息、历史和最多 3 条候选记忆判断
-完整意图，只有模型明确调用工具后才写入。`preferred_time` 可以补全缺失钟点，但
-关键词、正则和固定错别字替换不会直接创建提醒；聊天中的长期偏好候选也由同一次
-模型调用进行语义提取，响应仍区分检索到与实际使用的记忆。
+每轮聊天先调用一次结构化语义预处理模型生成 `SemanticFrame`，再运行主 Agent。
+语义帧标记最终操作、改口、撤销、歧义、用户消息证据编号和置信度；用户原文仍是
+最终事实来源。只有主 Agent 明确调用工具形成计划，且最终决定与语义帧一致时才会
+写入。`preferred_time` 可以补全缺失钟点，但关键词、正则和固定错别字替换不会直接
+创建提醒；长期偏好候选由主 Agent 的结构化结果返回。
 
 Agent 内部提供提醒查询、创建、修改和删除工具。核对、修改或删除前会先读取真实
 提醒状态；只读查询不出现在公共 `tool_calls` 中。创建和改时间还会校验明确钟点或
 实际使用的时间记忆，并核对落库后的本地钟点与用户原话一致，不能把“早上”“晚上”
 等范围自行换成 8 点。每周提醒必须明确星期几，不能自行猜成当天或周日。
 
-提醒写操作采用双层安全保护：消息要求绕过规则，或模型同一轮提出多个创建、修改、删除时，
-都会在工具执行前整批拦截并要求用户重新逐条确认；单个工具还必须提交可核对的用户操作原话。用户最终撤销、
-否定操作，或要求一次性提醒却试图覆盖周期提醒时，工具层会拒绝写入。该策略不改变
-REST API 字段，但一句话批量改动会返回 `needs_clarification`。
+提醒写操作采用语义门禁和确定性结构校验：模型同一轮提出多个创建、修改、删除时会
+在执行前整批拦截；单个写计划必须提交真实存在的用户消息编号，普通写操作必须包含
+当前消息。修改和删除前必须先查询真实提醒；使用时间记忆时必须引用本轮检索到且时间
+一致的记忆 ID。用户最终撤销、语义仍有歧义或计划与语义帧不一致时不会写入，并返回
+自然澄清说明。该策略不改变 REST API 字段。
 
 运行后端测试：
 
@@ -197,6 +209,14 @@ python -m backend.tests.evaluation.run_live_stress_evaluation
 
 ```powershell
 python -m backend.tests.evaluation.run_live_dialogue_evaluation
+```
+
+完整 40 轮攻击协议已经纳入版本控制，并会在计分前检查“重复创建”等目标是否真的
+出现在合成用户消息中。该命令会产生真实模型费用，必须在确认费用后运行；评测使用
+临时注册账号和临时数据库：
+
+```powershell
+python -m backend.tests.evaluation.run_live_adversarial_evaluation
 ```
 
 ## 前端
