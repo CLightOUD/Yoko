@@ -5,6 +5,9 @@ import {
   useState,
 } from 'react'
 import {
+  changePassword,
+  deleteAccount,
+  exportAccountData,
   getCurrentUser,
   loginUser,
   logoutUser,
@@ -18,10 +21,12 @@ const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
 export function AuthProvider({ children }) {
   const [status, setStatus] = useState(AUTH_STATUS.LOADING)
   const [user, setUser] = useState(null)
+  const [sessionExpiresAt, setSessionExpiresAt] = useState(null)
   const [error, setError] = useState('')
 
   const markUnauthenticated = useCallback(() => {
     setUser(null)
+    setSessionExpiresAt(null)
     setError('')
     setStatus(AUTH_STATUS.UNAUTHENTICATED)
   }, [])
@@ -32,6 +37,7 @@ export function AuthProvider({ children }) {
     try {
       const res = await getCurrentUser()
       setUser(res.user)
+      setSessionExpiresAt(res.session_expires_at ?? null)
       setStatus(AUTH_STATUS.AUTHENTICATED)
     } catch (err) {
       if (
@@ -42,6 +48,7 @@ export function AuthProvider({ children }) {
         return
       }
       setUser(null)
+      setSessionExpiresAt(null)
       setError(err?.message || '无法确认登录状态，请检查网络后重试')
       setStatus(AUTH_STATUS.ERROR)
     }
@@ -54,6 +61,7 @@ export function AuthProvider({ children }) {
       .then((res) => {
         if (!active) return
         setUser(res.user)
+        setSessionExpiresAt(res.session_expires_at ?? null)
         setStatus(AUTH_STATUS.AUTHENTICATED)
       })
       .catch((err) => {
@@ -66,6 +74,7 @@ export function AuthProvider({ children }) {
           return
         }
         setUser(null)
+        setSessionExpiresAt(null)
         setError(err?.message || '无法确认登录状态，请检查网络后重试')
         setStatus(AUTH_STATUS.ERROR)
       })
@@ -83,6 +92,7 @@ export function AuthProvider({ children }) {
   const login = useCallback(async ({ username, password }) => {
     const res = await loginUser({ username, password })
     setUser(res.user)
+    setSessionExpiresAt(res.session_expires_at ?? null)
     setStatus(AUTH_STATUS.AUTHENTICATED)
     return res
   }, [])
@@ -96,6 +106,7 @@ export function AuthProvider({ children }) {
         timezone,
       })
       setUser(res.user)
+      setSessionExpiresAt(res.session_expires_at ?? null)
       setStatus(AUTH_STATUS.AUTHENTICATED)
       return res
     },
@@ -119,9 +130,67 @@ export function AuthProvider({ children }) {
     }
   }, [markUnauthenticated])
 
+  // 修改密码：成功后后端会签发新 Session，旧 Session 全部失效
+  const updatePassword = useCallback(async ({ current_password, new_password }) => {
+    const res = await changePassword({ current_password, new_password })
+    setUser(res.user)
+    setSessionExpiresAt(res.session_expires_at ?? null)
+    return res
+  }, [])
+
+  // 导出账号数据：触发浏览器 JSON 文件下载
+  const exportData = useCallback(async () => {
+    const response = await exportAccountData()
+    const blob = await response.blob()
+    // 从 Content-Disposition 读取文件名，回退到默认名
+    const disposition = response.headers.get('Content-Disposition')
+    let filename = 'yoko-account-export.json'
+    const match = disposition?.match(/filename="?([^";]+)"?/)
+    if (match?.[1]) filename = match[1]
+
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  // 注销账户：需再次输入密码确认；成功后回到登录页
+  const removeAccount = useCallback(async ({ password }) => {
+    await deleteAccount({ password })
+    markUnauthenticated()
+  }, [markUnauthenticated])
+
   const value = useMemo(
-    () => ({ status, user, error, login, register, logout, restoreSession }),
-    [status, user, error, login, register, logout, restoreSession],
+    () => ({
+      status,
+      user,
+      sessionExpiresAt,
+      error,
+      login,
+      register,
+      logout,
+      restoreSession,
+      updatePassword,
+      exportData,
+      removeAccount,
+    }),
+    [
+      status,
+      user,
+      sessionExpiresAt,
+      error,
+      login,
+      register,
+      logout,
+      restoreSession,
+      updatePassword,
+      exportData,
+      removeAccount,
+    ],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

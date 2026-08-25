@@ -1,14 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { History, RefreshCw, Search, Send, X } from 'lucide-react'
-import { sendChat } from '../api/client'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  History,
+  Plus,
+  RefreshCw,
+  Search,
+  Send,
+  ThumbsDown,
+  ThumbsUp,
+  X,
+  Download,
+  Trash2,
+  ExternalLink,
+  Clock,
+} from 'lucide-react'
+import { sendChat, sendFeedback } from '../api/client'
 import {
   CHAT_STATUS,
+  ERROR_CODE,
+  FEEDBACK_RATING,
   MEMORY_ACTION_LABEL,
   TASK_TYPE_LABEL,
-  TOOL_STATUS,
 } from '../api/constants'
 import { useAuth } from '../auth/useAuth'
-import { formatMs } from '../api/format'
 
 let idCounter = 0
 function nextId() {
@@ -16,28 +29,257 @@ function nextId() {
   return `msg-${Date.now()}-${idCounter}`
 }
 
-// 本地持久化：MVP 后端不保留历史会话，聊天记录存浏览器，保证刷新后仍可找回。
-// 按当前用户 ID 隔离，避免账号切换后串号。
+// 本地持久化版本号；升级结构时递增并执行迁移
+const STORAGE_VERSION = 2
 const MAX_HISTORY = 300
+// localStorage 容量安全阈值（约 4.5MB，留出余地给其他站点数据）
+const STORAGE_SIZE_LIMIT = 4.5 * 1024 * 1024
 
-function loadHistory(storageKey) {
+function buildStorageKey(userId) {
+  return `yoko.chat.v${STORAGE_VERSION}.${userId}`
+}
+
+function legacyStorageKey(userId) {
+  return `yoko.chat.${userId}`
+}
+
+// 从 localStorage 读取并做版本迁移
+function loadHistory(userId) {
+  const key = buildStorageKey(userId)
   try {
-    const raw = localStorage.getItem(storageKey)
-    return raw ? JSON.parse(raw) : { messages: [], conversationId: null }
+    const raw = localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      // 版本校验：结构对就直接用
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)) {
+        return {
+          messages: parsed.messages,
+          conversationId: parsed.conversationId ?? null,
+        }
+      }
+    }
   } catch {
-    return { messages: [], conversationId: null }
+    // 存储损坏时静默忽略，尝试迁移旧版本
+  }
+
+  // 尝试从旧版本迁移
+  try {
+    const oldKey = legacyStorageKey(userId)
+    const oldRaw = localStorage.getItem(oldKey)
+    if (oldRaw) {
+      const old = JSON.parse(oldRaw)
+      if (old && Array.isArray(old.messages)) {
+        const migrated = {
+          messages: old.messages.slice(-MAX_HISTORY),
+          conversationId: old.conversationId ?? null,
+        }
+        saveHistory(userId, migrated.messages, migrated.conversationId)
+        localStorage.removeItem(oldKey)
+        return migrated
+      }
+    }
+  } catch {
+    // 迁移失败也不中断体验
+  }
+
+  return { messages: [], conversationId: null }
+}
+
+function saveHistory(userId, messages, conversationId) {
+  const key = buildStorageKey(userId)
+  try {
+    const payload = JSON.stringify({ messages, conversationId })
+    // 简单容量保护：超出阈值时截断更早的消息再存
+    if (payload.length > STORAGE_SIZE_LIMIT && messages.length > 10) {
+      const trimmed = messages.slice(Math.floor(messages.length / 2))
+      saveHistory(userId, trimmed, conversationId)
+      return
+    }
+    localStorage.setItem(key, payload)
+  } catch {
+    // 存储已满或被禁用时静默忽略
   }
 }
 
-function saveHistory(storageKey, messages, conversationId) {
+function clearHistory(userId) {
+  const key = buildStorageKey(userId)
   try {
-    localStorage.setItem(storageKey, JSON.stringify({ messages, conversationId }))
+    localStorage.removeItem(key)
   } catch {
-    // 存储已满或被禁用时静默忽略，不影响当前对话
+    // ignore
   }
 }
 
-function AssistantBubble({ msg, highlighted }) {
+function exportChatHistory(userId, messages) {
+  const data = {
+    exported_at: new Date().toISOString(),
+    user_id: userId,
+    message_count: messages.length,
+    messages: messages.map((m) => ({
+      role: m.role,
+      text: m.text,
+      time: m.time ? new Date(m.time).toISOString() : null,
+      status: m.status ?? null,
+    })),
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `yoko-chat-${new Date().toISOString().slice(0, 10)}.json`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+// ===== Sources 引用展示 =====
+function SourceCitations({ sources }) {
+  if (!sources?.length) return null
+  return (
+    <div className="chat-meta chat-sources">
+      <span className="chat-meta-label">参考来源：</span>
+      <ol className="source-list">
+        {sources.map((s, i) => (
+          <li key={i} className="source-item">
+            <a
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="source-link"
+              title={s.snippet || s.title}
+            >
+              <span className="source-index">[{i + 1}]</span>
+              <span className="source-title">{s.title || s.url}</span>
+              <ExternalLink aria-hidden="true" size={14} />
+            </a>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+// ===== 反馈组件：点赞、点踩、反馈原因 =====
+function FeedbackBar({ msg, onSubmit }) {
+  const [rating, setRating] = useState(msg.feedback?.rating ?? null)
+  const [showReason, setShowReason] = useState(false)
+  const [reasonText, setReasonText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [submitted, setSubmitted] = useState(!!msg.feedback?.submitted)
+
+  const requestId = msg.request_id
+  if (!requestId) return null
+
+  async function handleRating(nextRating) {
+    if (submitting || submitted) return
+    // 再次点击相同评分取消
+    const target = rating === nextRating ? null : nextRating
+    setRating(target)
+    if (target === FEEDBACK_RATING.DOWN) {
+      setShowReason(true)
+      setError('')
+    } else {
+      setShowReason(false)
+      if (target) {
+        // 点赞直接提交
+        await doSubmit(target, '')
+      }
+    }
+  }
+
+  async function doSubmit(ratingValue, feedbackText) {
+    if (!requestId || submitting) return
+    setSubmitting(true)
+    setError('')
+    try {
+      await onSubmit({
+        request_id: requestId,
+        rating: ratingValue,
+        feedback_text: feedbackText || null,
+      })
+      setSubmitted(true)
+    } catch (err) {
+      setError(err?.message || '反馈提交失败，请稍后重试')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleReasonSubmit() {
+    const text = reasonText.trim()
+    if (!rating || submitting) return
+    await doSubmit(rating, text)
+  }
+
+  return (
+    <div className="chat-feedback">
+      <div className="chat-feedback__actions">
+        <button
+          type="button"
+          className={`icon-btn icon-btn--feedback ${rating === FEEDBACK_RATING.UP ? 'is-active' : ''}`}
+          onClick={() => handleRating(FEEDBACK_RATING.UP)}
+          disabled={submitting || submitted}
+          title="有帮助"
+          aria-label="点赞"
+        >
+          <ThumbsUp size={16} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className={`icon-btn icon-btn--feedback ${rating === FEEDBACK_RATING.DOWN ? 'is-active' : ''}`}
+          onClick={() => handleRating(FEEDBACK_RATING.DOWN)}
+          disabled={submitting || submitted}
+          title="没帮助"
+          aria-label="点踩"
+        >
+          <ThumbsDown size={16} aria-hidden="true" />
+        </button>
+        {submitted && <span className="feedback-submitted">已反馈</span>}
+      </div>
+
+      {showReason && !submitted && (
+        <div className="feedback-reason">
+          <textarea
+            className="field feedback-reason__input"
+            rows={2}
+            value={reasonText}
+            onChange={(e) => setReasonText(e.target.value)}
+            placeholder="可以告诉我们哪里不对吗？（可选）"
+            maxLength={500}
+          />
+          <div className="feedback-reason__actions">
+            {error && <span className="feedback-error">{error}</span>}
+            <button
+              type="button"
+              className="btn btn--secondary btn--small"
+              onClick={() => {
+                setShowReason(false)
+                setRating(null)
+                setReasonText('')
+                setError('')
+              }}
+              disabled={submitting}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn--small"
+              onClick={handleReasonSubmit}
+              disabled={submitting}
+            >
+              {submitting ? '提交中…' : '提交反馈'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AssistantBubble({ msg, highlighted, onFeedback }) {
   const isPartial = msg.status === CHAT_STATUS.PARTIAL
   const needsClarification = msg.status === CHAT_STATUS.NEEDS_CLARIFICATION
   const className = ['chat-bubble', 'chat-bubble--assistant']
@@ -74,21 +316,7 @@ function AssistantBubble({ msg, highlighted }) {
         </div>
       )}
 
-      {(msg.tools ?? []).length > 0 && (
-        <div className="chat-meta">
-          <span className="chat-meta-label">操作：</span>
-          {msg.tools.map((tool, index) => (
-            <span
-              key={index}
-              className={
-                tool.status === TOOL_STATUS.SUCCESS ? 'pill pill--green' : 'pill pill--red'
-              }
-            >
-              {tool.summary}
-            </span>
-          ))}
-        </div>
-      )}
+      <SourceCitations sources={msg.sources} />
 
       {(msg.changes ?? []).length > 0 && (
         <div className="chat-meta">
@@ -102,29 +330,17 @@ function AssistantBubble({ msg, highlighted }) {
         </div>
       )}
 
-      {msg.metrics && (
-        <div className="chat-meta">
-          <span className="pill pill--gray">本次耗时 {formatMs(msg.metrics.total_ms)}</span>
-        </div>
-      )}
+      <FeedbackBar msg={msg} onSubmit={onFeedback} />
     </div>
   )
 }
 
-function HistoryPanel({ open, onClose, onSelect, storageKey }) {
+function HistoryPanel({ open, onClose, onSelect, storageKey, onNewChat, onClear, onExport, messages }) {
   const [query, setQuery] = useState('')
-  const history = useMemo(
-    () =>
-      open
-        ? loadHistory(storageKey)
-        : { messages: [], conversationId: null },
-    [open, storageKey],
-  )
 
   const all = useMemo(() => {
-    const messages = (history.messages ?? []).flatMap((m) => m)
     return [...messages].sort((a, b) => (b.time ?? 0) - (a.time ?? 0))
-  }, [history])
+  }, [messages])
 
   const results = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase()
@@ -151,6 +367,33 @@ function HistoryPanel({ open, onClose, onSelect, storageKey }) {
             aria-label="关闭历史记录"
           >
             <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="history-actions">
+          <button
+            type="button"
+            className="btn btn--secondary btn--small"
+            onClick={onNewChat}
+          >
+            <Plus aria-hidden="true" />
+            新对话
+          </button>
+          <button
+            type="button"
+            className="btn btn--secondary btn--small"
+            onClick={onExport}
+          >
+            <Download aria-hidden="true" />
+            导出记录
+          </button>
+          <button
+            type="button"
+            className="btn btn--danger btn--small"
+            onClick={onClear}
+          >
+            <Trash2 aria-hidden="true" />
+            清空本地
           </button>
         </div>
 
@@ -203,40 +446,100 @@ function HistoryPanel({ open, onClose, onSelect, storageKey }) {
   )
 }
 
+// 根据错误状态码生成用户友好的提示和操作建议
+function getErrorDisplay(error, retryRequest) {
+  if (!error) return null
+  const status = error?.status
+  const code = error?.code
+
+  if (status === 401) {
+    return { type: 'auth', text: '登录已过期，请重新登录后再试。' }
+  }
+  if (status === 409 || code === ERROR_CODE.RESOURCE_CONFLICT) {
+    return {
+      type: 'conflict',
+      text: '请求与当前状态冲突，可能内容已被修改。请刷新后重试。',
+    }
+  }
+  if (status === 429 || code === ERROR_CODE.TOO_MANY_ATTEMPTS) {
+    const secs = error?.retryAfter
+    return {
+      type: 'rate',
+      text: secs
+        ? `请求过于频繁，请 ${secs} 秒后再试。`
+        : '请求过于频繁，请稍后再试。',
+      retryAfter: secs ?? null,
+    }
+  }
+  if (status === 503) {
+    return {
+      type: 'unavailable',
+      text: '服务暂时不可用，请稍后重试。',
+    }
+  }
+  if (status === 502) {
+    return {
+      type: 'model',
+      text: error?.message || '模型暂时无法响应，请稍后重试。',
+    }
+  }
+  if (status === 0 && error?.message?.includes('超时')) {
+    return { type: 'timeout', text: error.message }
+  }
+  return { type: 'general', text: error?.message || '发送失败，请重试' }
+}
+
 export default function ChatPage() {
   const { user } = useAuth()
   const userId = user?.id ?? 'anonymous'
-  // 按当前用户隔离本地聊天历史，账号切换后不会看到上一账号的记录
-  const storageKey = `yoko.chat.${userId}`
 
   const [messages, setMessages] = useState([])
   const [conversationId, setConversationId] = useState(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(null)
   const [retryRequest, setRetryRequest] = useState(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [highlightId, setHighlightId] = useState(null)
+  const [rateCountdown, setRateCountdown] = useState(null)
+
   const listEndRef = useRef(null)
+  const abortRef = useRef(null)
+  const rateTimerRef = useRef(null)
 
   // 惰性恢复上次会话
   useEffect(() => {
-    const stored = loadHistory(storageKey)
+    const stored = loadHistory(userId)
     if (stored.messages?.length) setMessages(stored.messages)
     if (stored.conversationId) setConversationId(stored.conversationId)
-  }, [storageKey])
+  }, [userId])
 
   // 持久化到本地
   useEffect(() => {
-    if (messages.length) saveHistory(storageKey, messages, conversationId)
-  }, [storageKey, messages, conversationId])
+    if (messages.length || conversationId) {
+      saveHistory(userId, messages, conversationId)
+    }
+  }, [userId, messages, conversationId])
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  async function submitChat(request, { appendUser }) {
-    setError('')
+  // 限流倒计时
+  useEffect(() => {
+    if (rateCountdown == null) return
+    if (rateCountdown <= 0) {
+      setRateCountdown(null)
+      return
+    }
+    rateTimerRef.current = setTimeout(() => {
+      setRateCountdown((prev) => (prev == null ? null : Math.max(0, prev - 1)))
+    }, 1000)
+    return () => clearTimeout(rateTimerRef.current)
+  }, [rateCountdown])
+
+  const submitChat = useCallback(async (request, { appendUser }) => {
+    setError(null)
     if (appendUser) {
       setMessages((prev) => [
         ...prev.slice(-MAX_HISTORY + 1),
@@ -249,6 +552,7 @@ export default function ChatPage() {
       const res = await sendChat({
         conversation_id: request.conversationId,
         message: request.text,
+        timezone: user?.timezone ?? null,
         idempotency_key: request.idempotencyKey,
       })
       setRetryRequest(null)
@@ -262,22 +566,31 @@ export default function ChatPage() {
           time: Date.now(),
           status: res.status,
           memories: res.retrieved_memories,
-          tools: res.tool_calls,
+          sources: res.sources,
           changes: res.memory_changes,
           metrics: res.metrics,
+          request_id: res.request_id,
+          feedback: {},
         },
       ])
     } catch (err) {
-      setError(err.message || '发送失败，请重试')
+      const errInfo = getErrorDisplay(err, request)
+      setError(errInfo)
       setRetryRequest(request)
+      // 429 时启动倒计时
+      if (err?.status === 429 && err?.retryAfter != null) {
+        setRateCountdown(err.retryAfter)
+      }
     } finally {
       setLoading(false)
+      abortRef.current = null
     }
-  }
+  }, [user?.timezone])
 
   function handleSend() {
     const text = input.trim()
     if (!text || loading) return
+    if (rateCountdown != null && rateCountdown > 0) return
 
     const request = {
       text,
@@ -286,6 +599,7 @@ export default function ChatPage() {
     }
     setInput('')
     setRetryRequest(null)
+    setError(null)
     submitChat(request, { appendUser: true })
   }
 
@@ -317,6 +631,52 @@ export default function ChatPage() {
     }
   }
 
+  function handleNewChat() {
+    const confirmed = messages.length === 0 || window.confirm('开始新对话将清空当前对话视图（本地记录仍保留）。是否继续？')
+    if (!confirmed) return
+    setMessages([])
+    setConversationId(null)
+    setError(null)
+    setRetryRequest(null)
+    setHistoryOpen(false)
+  }
+
+  function handleClearHistory() {
+    const confirmed = window.confirm('确定要清空本地所有聊天记录吗？此操作不可恢复。')
+    if (!confirmed) return
+    clearHistory(userId)
+    setMessages([])
+    setConversationId(null)
+    setError(null)
+    setRetryRequest(null)
+    setHistoryOpen(false)
+  }
+
+  function handleExportHistory() {
+    exportChatHistory(userId, messages)
+  }
+
+  async function handleFeedback({ request_id, rating, feedback_text }) {
+    const res = await sendFeedback({ request_id, rating, feedback_text })
+    // 标记已提交，并更新记忆变化展示
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.request_id === request_id
+          ? {
+              ...m,
+              feedback: { rating, submitted: true },
+              changes: res?.memory_changes?.length
+                ? [...(m.changes ?? []), ...res.memory_changes]
+                : m.changes,
+            }
+          : m,
+      ),
+    )
+    return res
+  }
+
+  const errorDisplay = error
+
   return (
     <div className="page">
       <div className="chat-toolbar">
@@ -327,6 +687,15 @@ export default function ChatPage() {
         >
           <History aria-hidden="true" />
           历史记录
+        </button>
+        <button
+          type="button"
+          className="btn btn--secondary btn--small"
+          onClick={handleNewChat}
+          title="开始新的对话"
+        >
+          <Plus aria-hidden="true" />
+          新对话
         </button>
       </div>
 
@@ -347,7 +716,11 @@ export default function ChatPage() {
             </div>
           ) : (
             <div key={msg.id} id={`anchor-${msg.id}`}>
-              <AssistantBubble msg={msg} highlighted={highlightId === msg.id} />
+              <AssistantBubble
+                msg={msg}
+                highlighted={highlightId === msg.id}
+                onFeedback={handleFeedback}
+              />
             </div>
           ),
         )}
@@ -367,15 +740,29 @@ export default function ChatPage() {
         <div ref={listEndRef} />
       </div>
 
-      {error && (
-        <div className="error-banner error-banner--action" role="alert">
-          <span>{error}</span>
-          {retryRequest && (
+      {errorDisplay && (
+        <div
+          className={`error-banner error-banner--action ${
+            errorDisplay.type === 'rate' ? 'error-banner--rate' : ''
+          }`}
+          role="alert"
+        >
+          <span>
+            {errorDisplay.type === 'rate' && rateCountdown != null && rateCountdown > 0 ? (
+              <>
+                <Clock aria-hidden="true" size={14} />
+                <span>限流中，{rateCountdown} 秒后可重试</span>
+              </>
+            ) : (
+              errorDisplay.text
+            )}
+          </span>
+          {retryRequest && errorDisplay.type !== 'auth' && (
             <button
               className="btn btn--secondary btn--small"
               type="button"
               onClick={handleRetry}
-              disabled={loading}
+              disabled={loading || (rateCountdown != null && rateCountdown > 0)}
             >
               <RefreshCw aria-hidden="true" />
               {loading ? '重试中…' : '重试发送'}
@@ -392,12 +779,13 @@ export default function ChatPage() {
           onKeyDown={handleKeyDown}
           placeholder="请输入消息，例如：明天晚上7点提醒我吃药"
           aria-label="消息输入框"
+          disabled={loading || (rateCountdown != null && rateCountdown > 0)}
         />
         <button
           className="btn"
           type="button"
           onClick={handleSend}
-          disabled={loading || !input.trim()}
+          disabled={loading || !input.trim() || (rateCountdown != null && rateCountdown > 0)}
         >
           <Send aria-hidden="true" />
           {loading ? '发送中…' : '发送'}
@@ -408,7 +796,10 @@ export default function ChatPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
         onSelect={handleSelectHistory}
-        storageKey={storageKey}
+        onNewChat={handleNewChat}
+        onClear={handleClearHistory}
+        onExport={handleExportHistory}
+        messages={messages}
       />
     </div>
   )

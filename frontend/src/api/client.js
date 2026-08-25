@@ -16,13 +16,15 @@ const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
 
 // 统一错误对象：把 ErrorResponse 转成可判定的异常（见 API_SPEC 3.4）。
 export class ApiError extends Error {
-  constructor({ code, message, details = null, requestId = null, status }) {
+  constructor({ code, message, details = null, requestId = null, status, retryAfter = null }) {
     super(message || `请求失败（HTTP ${status}）`)
     this.name = 'ApiError'
     this.code = code
     this.details = details
     this.requestId = requestId
     this.status = status
+    // 429 限流时的 Retry-After 秒数（解析失败时为 null）
+    this.retryAfter = retryAfter
   }
 }
 
@@ -37,7 +39,16 @@ function buildQuery(query) {
   return qs ? `?${qs}` : ''
 }
 
-async function request(path, { method = 'GET', query, body, headers = {} } = {}) {
+function parseRetryAfter(response) {
+  const header = response.headers.get('Retry-After')
+  if (!header) return null
+  const seconds = parseInt(header, 10)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds
+  // Retry-After 也可能是 HTTP-date，这里简化处理：解析失败返回 null
+  return null
+}
+
+async function request(path, { method = 'GET', query, body, headers = {}, responseType = 'json' } = {}) {
   const url = `${API_BASE_URL}${path}${buildQuery(query)}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
@@ -68,9 +79,15 @@ async function request(path, { method = 'GET', query, body, headers = {} } = {})
   }
   clearTimeout(timer)
 
+  // 2xx 且调用方需要原始响应（如导出下载）时直接返回 Response
+  if (response.ok && responseType === 'raw') {
+    return response
+  }
+
   const payload = await response.json().catch(() => null)
 
   if (!response.ok) {
+    const retryAfter = parseRetryAfter(response)
     if (payload?.error) {
       // Session 过期/失效时统一通知认证状态（登录与 /me 自身的 401 由调用方处理）
       if (
@@ -85,12 +102,14 @@ async function request(path, { method = 'GET', query, body, headers = {} } = {})
         details: payload.error.details,
         requestId: payload.request_id,
         status: response.status,
+        retryAfter,
       })
     }
     throw new ApiError({
       code: ERROR_CODE.INTERNAL_ERROR,
       message: `请求失败（HTTP ${response.status}）`,
       status: response.status,
+      retryAfter,
     })
   }
 
@@ -127,6 +146,27 @@ export function getCurrentUser() {
 
 export function logoutUser() {
   return request('/api/auth/logout', { method: 'POST' })
+}
+
+// 修改密码（成功后后端会签发新 Session Cookie，旧 Session 全部失效）
+export function changePassword({ current_password, new_password }) {
+  return request('/api/auth/password', {
+    method: 'POST',
+    body: { current_password, new_password },
+  })
+}
+
+// 账号数据导出（返回 JSON 文件下载）
+export function exportAccountData() {
+  return request('/api/account/export', { responseType: 'raw' })
+}
+
+// 注销账户（需再次验证密码；成功后 Cookie 被删除）
+export function deleteAccount({ password }) {
+  return request('/api/account', {
+    method: 'DELETE',
+    body: { password },
+  })
 }
 
 // 对话：发送用户消息，返回 Agent 回复与记忆/工具/指标信息

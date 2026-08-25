@@ -10,22 +10,52 @@ const WEEKDAYS = [
   '星期六',
 ]
 
-// Asia/Shanghai 固定 UTC+8，无夏令时，可安全地做手动时区换算。
-// MVP 演示用户时区固定为 Asia/Shanghai（见 API_SPEC 3.5）。
-const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000
-
-function toShanghaiParts(iso) {
+// 使用 Intl.DateTimeFormat 将 ISO 时间字符串按指定时区拆解为各部分
+// 相比手动加减偏移，这种方式天然支持夏令时和任意 IANA 时区
+function toZonedParts(iso, timezone = DEFAULT_TIMEZONE) {
   if (!iso) return null
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return null
-  const shifted = new Date(date.getTime() + SHANGHAI_OFFSET_MS)
-  return {
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1,
-    day: shifted.getUTCDate(),
-    hour: shifted.getUTCHours(),
-    minute: shifted.getUTCMinutes(),
-    weekday: shifted.getUTCDay(),
+
+  try {
+    const fmt = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'short',
+      hour12: false,
+    })
+    const parts = fmt.formatToParts(date)
+    const get = (type) => parts.find((p) => p.type === type)?.value ?? ''
+
+    const weekdayMap = {
+      '周日': 0, '周一': 1, '周二': 2, '周三': 3,
+      '周四': 4, '周五': 5, '周六': 6,
+    }
+    const weekdayStr = get('weekday')
+    const weekday = weekdayMap[weekdayStr] ?? 0
+
+    return {
+      year: parseInt(get('year'), 10),
+      month: parseInt(get('month'), 10),
+      day: parseInt(get('day'), 10),
+      hour: parseInt(get('hour'), 10),
+      minute: parseInt(get('minute'), 10),
+      weekday,
+    }
+  } catch {
+    // 时区无效时回退到本地时区
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      day: date.getDate(),
+      hour: date.getHours(),
+      minute: date.getMinutes(),
+      weekday: date.getDay(),
+    }
   }
 }
 
@@ -34,22 +64,22 @@ function pad(value) {
 }
 
 // “2026年8月22日 星期六 19:00”——用于需要公历日期、星期与钟点的场景（适老化核对）。
-export function formatFullDateTime(iso) {
-  const p = toShanghaiParts(iso)
+export function formatFullDateTime(iso, timezone) {
+  const p = toZonedParts(iso, timezone)
   if (!p) return '—'
   return `${p.year}年${p.month}月${p.day}日 ${WEEKDAYS[p.weekday]} ${pad(p.hour)}:${pad(p.minute)}`
 }
 
 // “8月22日 星期六 19:00”——用于列表等紧凑场景。
-export function formatDateTime(iso) {
-  const p = toShanghaiParts(iso)
+export function formatDateTime(iso, timezone) {
+  const p = toZonedParts(iso, timezone)
   if (!p) return '—'
   return `${p.month}月${p.day}日 ${WEEKDAYS[p.weekday]} ${pad(p.hour)}:${pad(p.minute)}`
 }
 
 // “19:00”——仅显示钟点。
-export function formatTime(iso) {
-  const p = toShanghaiParts(iso)
+export function formatTime(iso, timezone) {
+  const p = toZonedParts(iso, timezone)
   if (!p) return '—'
   return `${pad(p.hour)}:${pad(p.minute)}`
 }
@@ -62,16 +92,73 @@ export function formatMs(ms) {
 }
 
 // 把 <input type="datetime-local"> 的值（如 "2026-08-22T19:00"）转为后端要求的带时区 ISO 字符串。
-// MVP 演示固定 Asia/Shanghai（UTC+8）。
-export function localToIso(localDateTime) {
+// 使用 Intl.DateTimeFormat 反推本地日期在指定时区下的 UTC 偏移，避免硬编码 +08:00。
+export function localToIso(localDateTime, timezone = DEFAULT_TIMEZONE) {
   if (!localDateTime) return ''
-  return `${localDateTime}:00+08:00`
+  // 先解析为本地时间的 Date（datetime-local 无时区，按本地时区解释）
+  const localDate = new Date(`${localDateTime}:00`)
+  if (Number.isNaN(localDate.getTime())) return ''
+
+  try {
+    // 找到该日期在目标时区下的 UTC 偏移
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    const parts = fmt.formatToParts(localDate)
+    const get = (type) => parts.find((p) => p.type === type)?.value ?? '0'
+
+    const zonedYear = parseInt(get('year'), 10)
+    const zonedMonth = parseInt(get('month'), 10)
+    const zonedDay = parseInt(get('day'), 10)
+    const zonedHour = parseInt(get('hour'), 10)
+    const zonedMinute = parseInt(get('minute'), 10)
+
+    // 构造目标时区下的"名义时间"对应的 UTC 时间
+    // 方法：用 UTC 时间构造，然后比较目标时区格式化结果与期望的差异
+    let utcDate = new Date(Date.UTC(zonedYear, zonedMonth - 1, zonedDay, zonedHour, zonedMinute, 0))
+
+    // 迭代校准：用当前猜测的 UTC 时间再格式化一次，如果与时区时间有偏差则调整
+    for (let i = 0; i < 3; i++) {
+      const checkParts = fmt.formatToParts(utcDate)
+      const getC = (type) => checkParts.find((p) => p.type === type)?.value ?? '0'
+      const h = parseInt(getC('hour'), 10)
+      const m = parseInt(getC('minute'), 10)
+      const diffMin = (zonedHour - h) * 60 + (zonedMinute - m)
+      if (Math.abs(diffMin) < 1) break
+      utcDate = new Date(utcDate.getTime() + diffMin * 60 * 1000)
+    }
+
+    // 计算与 UTC 的偏移（分钟）
+    const offsetMs = localDate.getTime() - utcDate.getTime()
+    const offsetMin = Math.round(offsetMs / 60000)
+    const sign = offsetMin >= 0 ? '+' : '-'
+    const absMin = Math.abs(offsetMin)
+    const offsetHours = Math.floor(absMin / 60)
+    const offsetMins = absMin % 60
+    const offsetStr = `${sign}${pad(offsetHours)}:${pad(offsetMins)}`
+
+    // 返回带偏移的 ISO 字符串：YYYY-MM-DDTHH:mm:ss+HH:mm
+    const year = zonedYear
+    const month = pad(zonedMonth)
+    const day = pad(zonedDay)
+    const hour = pad(zonedHour)
+    const minute = pad(zonedMinute)
+    return `${year}-${month}-${day}T${hour}:${minute}:00${offsetStr}`
+  } catch {
+    // 回退：简单拼接 +08:00（兼容旧行为）
+    return `${localDateTime}:00+08:00`
+  }
 }
 
-// 把带时区 ISO 转回 <input type="datetime-local"> 的本地输入值（注意：datetime-local 本身无时区，
-// 与 localToIso 的 +08:00 对称，仅用于回填编辑表单展示，避免时区偏移）。
-export function isoToLocalInput(iso) {
-  const p = toShanghaiParts(iso)
+// 把带时区 ISO 转回 <input type="datetime-local"> 的本地输入值
+export function isoToLocalInput(iso, timezone) {
+  const p = toZonedParts(iso, timezone)
   if (!p) return ''
   return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`
 }

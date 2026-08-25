@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BarChart3, Bell, BookMarked, LogOut, MessageCircle } from 'lucide-react'
+import { Bell, BookMarked, LogOut, MessageCircle, Settings } from 'lucide-react'
 import { getReadiness } from './api/client'
 import { AUTH_STATUS } from './api/constants'
 import { AuthProvider } from './auth/AuthContext'
@@ -8,7 +8,7 @@ import AuthPage from './pages/AuthPage'
 import ChatPage from './pages/ChatPage'
 import RemindersPage from './pages/RemindersPage'
 import MemoriesPage from './pages/MemoriesPage'
-import MetricsPage from './pages/MetricsPage'
+import AccountPage from './pages/AccountPage'
 import ReminderAlarm from './ReminderAlarm'
 import './App.css'
 
@@ -16,7 +16,7 @@ const TABS = [
   { key: 'chat', label: '对话', icon: MessageCircle },
   { key: 'reminders', label: '提醒', icon: Bell },
   { key: 'memories', label: '记忆', icon: BookMarked },
-  { key: 'metrics', label: '指标', icon: BarChart3 },
+  { key: 'account', label: '账户', icon: Settings },
 ]
 
 function HealthBadge({ status }) {
@@ -165,8 +165,8 @@ function MainApp() {
         <div style={{ display: tab === 'memories' ? undefined : 'none' }}>
           <MemoriesPage />
         </div>
-        <div style={{ display: tab === 'metrics' ? undefined : 'none' }}>
-          <MetricsPage />
+        <div style={{ display: tab === 'account' ? undefined : 'none' }}>
+          <AccountPage />
         </div>
       </main>
 

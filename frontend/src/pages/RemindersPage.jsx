@@ -15,6 +15,7 @@ import {
   REPEAT_TYPE_LABEL,
 } from '../api/constants'
 import { formatFullDateTime, isoToLocalInput, localToIso } from '../api/format'
+import { useAuth } from '../auth/useAuth'
 
 const FILTERS = [
   { key: REMINDER_LIST_STATUS.ACTIVE, label: '进行中' },
@@ -22,7 +23,7 @@ const FILTERS = [
   { key: REMINDER_LIST_STATUS.ALL, label: '全部' },
 ]
 
-function CreateReminderForm({ onCreated }) {
+function CreateReminderForm({ onCreated, timezone }) {
   const [title, setTitle] = useState('')
   const [triggerAt, setTriggerAt] = useState('')
   const [repeatType, setRepeatType] = useState(REPEAT_TYPE.NONE)
@@ -42,8 +43,8 @@ function CreateReminderForm({ onCreated }) {
     try {
       await createReminder({
         title: title.trim(),
-        next_trigger_at: localToIso(triggerAt),
-        timezone: DEFAULT_TIMEZONE,
+        next_trigger_at: localToIso(triggerAt, timezone),
+        timezone,
         repeat_type: repeatType,
       })
       setTitle('')
@@ -109,9 +110,9 @@ function CreateReminderForm({ onCreated }) {
   )
 }
 
-function EditReminderForm({ reminder, onCancel, onSaved }) {
+function EditReminderForm({ reminder, onCancel, onSaved, timezone }) {
   const [title, setTitle] = useState(reminder.title ?? '')
-  const [triggerAt, setTriggerAt] = useState(isoToLocalInput(reminder.next_trigger_at))
+  const [triggerAt, setTriggerAt] = useState(isoToLocalInput(reminder.next_trigger_at, timezone))
   const [repeatType, setRepeatType] = useState(reminder.repeat_type ?? REPEAT_TYPE.NONE)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -124,7 +125,7 @@ function EditReminderForm({ reminder, onCancel, onSaved }) {
       setError('请填写提醒内容和时间')
       return
     }
-    if (new Date(localToIso(triggerAt)).getTime() <= Date.now()) {
+    if (new Date(localToIso(triggerAt, timezone)).getTime() <= Date.now()) {
       setError('修改后的提醒时间需晚于当前时间')
       return
     }
@@ -133,7 +134,8 @@ function EditReminderForm({ reminder, onCancel, onSaved }) {
     try {
       await updateReminder(reminder.id, {
         title: title.trim(),
-        next_trigger_at: localToIso(triggerAt),
+        next_trigger_at: localToIso(triggerAt, timezone),
+        timezone,
         repeat_type: repeatType,
       })
       onSaved()
@@ -205,6 +207,8 @@ function EditReminderForm({ reminder, onCancel, onSaved }) {
 }
 
 export default function RemindersPage() {
+  const { user } = useAuth()
+  const timezone = user?.timezone || DEFAULT_TIMEZONE
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [filter, setFilter] = useState(REMINDER_LIST_STATUS.ACTIVE)
@@ -275,7 +279,7 @@ export default function RemindersPage() {
         ))}
       </div>
 
-      <CreateReminderForm onCreated={load} />
+      <CreateReminderForm onCreated={load} timezone={timezone} />
 
       {error && (
         <div className="error-banner" role="alert">
@@ -305,6 +309,7 @@ export default function RemindersPage() {
                     setEditingId(null)
                     load()
                   }}
+                  timezone={timezone}
                 />
               ) : (
                 <>
@@ -320,7 +325,7 @@ export default function RemindersPage() {
                     </span>
                   </div>
                   <div className="list-item__sub">
-                    下次提醒：{formatFullDateTime(reminder.next_trigger_at)}
+                    下次提醒：{formatFullDateTime(reminder.next_trigger_at, timezone)}
                   </div>
                   <div className="btn-row">
                     <button
