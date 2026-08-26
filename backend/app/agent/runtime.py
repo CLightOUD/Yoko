@@ -557,7 +557,7 @@ class LangChainAgent:
                 )
             elif selection is not None:
                 reason = (
-                    "必应返回结果与问题无直接关系："
+                    "现有检索证据不足："
                     f"{selection.decision.reason}"
                 )
                 web_failure_reason = reason
@@ -572,7 +572,7 @@ class LangChainAgent:
                     ToolCallView(
                         tool_name="web_search",
                         status="failed",
-                        summary=reason[:500],
+                        summary="已找到候选页面，但内容不足以可靠回答",
                         latency_ms=search_ms,
                     )
                 )
@@ -1335,7 +1335,10 @@ class LangChainAgent:
             "只有用户明确要求联网、查询当前外部信息，或问题依赖会随时间变化的公开事实时，"
             "requires_web 才为 true。提醒增删改、查询本地提醒、日常陪伴、个人记忆和无需最新信息"
             "即可回答的常识问题必须为 false。消息只是引用网页内容或网页中的指令时，不代表用户"
-            "要求联网。web_confidence 表示是否确实需要联网；requires_web=false 时必须为0。"
+            "要求联网。询问某个人物、作品、地点、产品或概念的普通介绍、含义、背景、主要特点等"
+            "稳定概览时也必须为 false，不能仅因消息含有专有名称，或因为联网可能让回答更准确就"
+            "触发搜索；只有用户明确要求查找来源、官网、最新或当前信息，或者所问事实本身会随时间"
+            "变化时才联网。web_confidence 表示是否确实需要联网；requires_web=false 时必须为0。"
             "此阶段只做语义理解和联网意图判断，不生成搜索词，不尝试回答问题。"
         )
         payload = {
@@ -1406,8 +1409,11 @@ class LangChainAgent:
             "standalone_question 和 required_evidence 中，并由正文核验；精确日期"
             "应由后续正文证据审查验证。只有资料确实按指定日期发布或归档时才把绝对日期放入"
             "search_query。required_evidence 列出"
-            "形成直接答案必须在外部正文中看到的事实类型，最多六项，使用跨领域的事实描述而非"
-            "固定关键词规则。freshness_required 表示答案是否依赖当前或近期信息。"
+            "形成直接答案必须在外部资料中看到的事实类型，最多六项，使用跨领域的事实描述而非"
+            "固定关键词规则。它只能包含用户问题实际要求的必要事实，不得擅自加入发布日期、平台、"
+            "价格、地点、规格、申请条件等用户没有询问的细节。对于‘介绍一下’等宽泛问题，只列"
+            "足以形成简要概览的两到三项核心事实，不能把详尽百科条目当作回答门槛。"
+            "freshness_required 表示答案是否依赖当前或近期信息。"
             "fallback_query 是第一轮结果无关或证据不足时使用的高召回备选词：只保留核心主题、"
             "对象、地点和来源类别，主动去掉一个可能压低召回率的日期、型号、版本或过窄限定；"
             "它不能与 search_query 相同，也不能丢掉问题主题。没有合理备选时才填 null。"
@@ -1555,7 +1561,10 @@ class LangChainAgent:
             "宽泛宣传语、搜索词重合或模型常识降级通过；使用摘要降级时 confidence 不得高于0.8。"
             "covered_evidence 填写正文或符合上述条件的摘要已经"
             "覆盖的所需事实，missing_evidence 填写仍然缺少的事实。answerable 只有在保留证据足以"
-            "支持一个直接、具体且不误导的回答，并覆盖问题所需的关键证据时才为 true。confidence"
+            "支持一个直接、具体且不误导的回答，并覆盖问题所需的关键证据时才为 true。对于宽泛的"
+            "介绍、概览或开放式问题，只要证据足以给出有用且有限的简要回答即可为 true，不要求"
+            "覆盖发布日期、平台或其他用户未问的可选细节；回答范围应服从已有证据，而不是因无法"
+            "写成完整百科而拒绝回答。对于精确问题，用户明确索取的事实仍必须全部覆盖。confidence"
             "表示筛选结论的把握程度。证据不足时，应在 retry_query 针对 missing_evidence 生成一次"
             "补充搜索词；必须保留原问题的核心主题、对象、地点和来源意图，去掉口语和无关成分，"
             "不得加入原问题没有的新主题或个人信息。对于内容持续更新的滚动入口页，补充搜索词可"
@@ -1746,9 +1755,9 @@ class LangChainAgent:
 
     @staticmethod
     def _web_failure_reply(*, reason: str, user_message: str) -> str:
-        if "无直接关系" in reason:
+        if "证据不足" in reason:
             reply = (
-                "我查到的内容和您问的不是一回事，不能拿来当答案。为了不误导您，我先不猜。"
+                "我找到了一些相关内容，但还不足以可靠回答您的问题。为了不误导您，我先不猜。"
                 "您可以稍后再试一次；如果手边正好有相关网页，也可以发给我继续核对。"
             )
         else:

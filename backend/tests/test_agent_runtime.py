@@ -215,6 +215,7 @@ def test_semantic_preprocessor_returns_structured_frame_and_usage() -> None:
     assert isinstance(calls[0][0], SystemMessage)
     assert isinstance(calls[0][1], HumanMessage)
     assert "requires_web" in calls[0][0].content
+    assert "稳定概览时也必须为 false" in calls[0][0].content
     assert "本身是有效的 delete 操作" in calls[0][0].content
     assert "不得在用户提出新的单条操作时自动合并" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
@@ -268,6 +269,8 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
     assert result.plan == plan
     assert result.model_messages == [raw]
     assert "只替换地点、对象、机构、时间" in calls[0][0].content
+    assert "不得擅自加入发布日期、平台" in calls[0][0].content
+    assert "宽泛问题" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["recent_history"][-1]["content"] == "乙机构呢"
     assert "draft" not in payload
@@ -620,6 +623,7 @@ def test_web_evidence_selector_filters_unrelated_results() -> None:
     assert "仅仅共享地名" in calls[0][0].content
     assert "动态网页无法提取有效正文" in calls[0][0].content
     assert "confidence 不得高于0.8" in calls[0][0].content
+    assert "不要求覆盖发布日期、平台" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["required_evidence"] == ["适用对象", "申请材料"]
     assert payload["results"][1]["content"].startswith("政策适用对象")
