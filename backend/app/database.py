@@ -10,7 +10,7 @@ from backend.app.config import default_timezone
 
 
 DEFAULT_DATABASE_PATH = Path("backend/data/app.db")
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 
 MIGRATION_TABLE_SQL = """
@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
     request_id TEXT,
+    image_sha256 TEXT CHECK (
+        image_sha256 IS NULL OR length(image_sha256) = 64
+    ),
+    vision_observation TEXT,
+    vision_confidence REAL CHECK (
+        vision_confidence IS NULL OR
+        (vision_confidence >= 0 AND vision_confidence <= 1)
+    ),
+    vision_model_ms INTEGER CHECK (
+        vision_model_ms IS NULL OR vision_model_ms >= 0
+    ),
     created_at TEXT NOT NULL
 );
 
@@ -235,6 +246,7 @@ class Database:
                 (1, "baseline_schema", self._migration_baseline),
                 (2, "chat_request_idempotency", self._migration_chat_requests),
                 (3, "account_authentication", self._migration_account_authentication),
+                (4, "message_vision_metadata", self._migration_message_vision_metadata),
             )
             for version, name, migration in migrations:
                 if version in applied:
@@ -383,6 +395,38 @@ class Database:
             """
         )
         Database._execute_script(connection, AUTH_SESSIONS_SQL)
+
+    @staticmethod
+    def _migration_message_vision_metadata(
+        connection: sqlite3.Connection,
+        applied_at: str,
+    ) -> None:
+        del applied_at
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        additions = (
+            (
+                "image_sha256",
+                "TEXT CHECK (image_sha256 IS NULL OR length(image_sha256) = 64)",
+            ),
+            ("vision_observation", "TEXT"),
+            (
+                "vision_confidence",
+                "REAL CHECK (vision_confidence IS NULL OR "
+                "(vision_confidence >= 0 AND vision_confidence <= 1))",
+            ),
+            (
+                "vision_model_ms",
+                "INTEGER CHECK (vision_model_ms IS NULL OR vision_model_ms >= 0)",
+            ),
+        )
+        for column, definition in additions:
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE messages ADD COLUMN {column} {definition}"
+                )
 
     @staticmethod
     def _execute_script(connection: sqlite3.Connection, script: str) -> None:

@@ -29,9 +29,14 @@ from backend.app.services.errors import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
+from backend.app.services.image_validation import (
+    ValidatedChatImage,
+    validate_chat_image,
+)
 from backend.app.services.memory_service import MemoryService
 from backend.app.services.metrics_service import MetricsService
 from backend.app.services.reminder_service import ReminderService
+from backend.app.services.vision_contract import VisionAnalyzer, VisionObservation
 
 
 logger = logging.getLogger("yoko.chat")
@@ -57,12 +62,14 @@ class ChatService:
         reminder_service: ReminderService,
         metrics_service: MetricsService,
         agent: AgentRuntime,
+        vision_analyzer: VisionAnalyzer | None = None,
     ) -> None:
         self.database = database
         self.memory_service = memory_service
         self.reminder_service = reminder_service
         self.metrics_service = metrics_service
         self.agent = agent
+        self.vision_analyzer = vision_analyzer
         self.chat_requests = ChatRequestRepository(database)
         self.messages = MessageRepository(database)
         self.users = UserRepository(database)
@@ -78,15 +85,23 @@ class ChatService:
         *,
         idempotency_key: str | None = None,
     ) -> ChatResponse:
+        validated_image = None
         if request.image is not None:
-            raise ModelNotReadyError("图片理解服务尚未接入")
+            if self.vision_analyzer is None:
+                raise ModelNotReadyError("图片理解服务尚未接入")
+            validated_image = validate_chat_image(request.image)
         overall_started = perf_counter()
         execution = self._begin(request, idempotency_key=idempotency_key)
         if execution.cached_response is not None:
             return execution.cached_response
 
         try:
-            return self._execute(request, execution, overall_started=overall_started)
+            return self._execute(
+                request,
+                execution,
+                overall_started=overall_started,
+                validated_image=validated_image,
+            )
         except Exception as exc:
             try:
                 self.chat_requests.fail(
@@ -203,10 +218,20 @@ class ChatService:
         execution: ChatExecution,
         *,
         overall_started: float,
+        validated_image: ValidatedChatImage | None,
     ) -> ChatResponse:
         user = self.users.get(request.user_id)
         if user is None:
             raise ResourceNotFoundError("用户不存在")
+
+        vision_observation = None
+        vision_ms = 0
+        if validated_image is not None:
+            vision_observation, vision_ms = self._analyze_image(
+                request=request,
+                execution=execution,
+                validated_image=validated_image,
+            )
 
         retrieval_started = perf_counter()
         memories = self.memory_service.retrieve_candidates(
@@ -256,22 +281,30 @@ class ChatService:
             agent_result = agent_result.commit_reminder_mutation(
                 connection=connection
             )
-            minimum_total = (
-                retrieval_ms + agent_result.model_ms + agent_result.tool_ms
-            )
+            combined_model_ms = agent_result.model_ms + vision_ms
+            minimum_total = retrieval_ms + combined_model_ms + agent_result.tool_ms
             total_ms = max(
                 minimum_total,
                 round((perf_counter() - overall_started) * 1000),
             )
             metrics = RequestMetrics(
-                model_call_count=agent_result.model_call_count,
-                input_tokens=agent_result.input_tokens,
-                output_tokens=agent_result.output_tokens,
+                model_call_count=agent_result.model_call_count
+                + (1 if vision_observation is not None else 0),
+                input_tokens=(
+                    None
+                    if vision_observation is not None
+                    else agent_result.input_tokens
+                ),
+                output_tokens=(
+                    None
+                    if vision_observation is not None
+                    else agent_result.output_tokens
+                ),
                 memory_tokens=agent_result.memory_tokens,
                 retrieved_memory_count=len(retrieved_memories),
                 used_memory_count=len(used_ids),
                 retrieval_ms=retrieval_ms,
-                model_ms=agent_result.model_ms,
+                model_ms=combined_model_ms,
                 tool_ms=agent_result.tool_ms,
                 total_ms=total_ms,
             )
@@ -332,6 +365,43 @@ class ChatService:
             ):
                 raise ResourceConflictError("聊天请求状态发生变化")
         return response
+
+    def _analyze_image(
+        self,
+        *,
+        request: ChatRequest,
+        execution: ChatExecution,
+        validated_image: ValidatedChatImage,
+    ) -> tuple[VisionObservation, int]:
+        assert request.image is not None
+        assert self.vision_analyzer is not None
+        stored = self.messages.get_for_user(
+            str(execution.user_message_id), request.user_id
+        )
+        if (
+            stored is not None
+            and stored.get("image_sha256") == validated_image.sha256
+            and stored.get("vision_observation")
+        ):
+            return VisionObservation.model_validate_json(
+                stored["vision_observation"]
+            ), int(stored.get("vision_model_ms") or 0)
+
+        started = perf_counter()
+        observation = self.vision_analyzer.analyze(
+            image=request.image,
+            message=request.message,
+        )
+        vision_ms = max(0, round((perf_counter() - started) * 1000))
+        self.messages.set_vision_observation(
+            str(execution.user_message_id),
+            request.user_id,
+            image_sha256=validated_image.sha256,
+            vision_observation=observation.model_dump_json(),
+            vision_confidence=observation.confidence,
+            vision_model_ms=vision_ms,
+        )
+        return observation, vision_ms
 
     @staticmethod
     def _request_hash(request: ChatRequest) -> str:

@@ -60,6 +60,41 @@ class MessageRepository(BaseRepository):
             ).fetchone()
         return row_to_dict(row)
 
+    def set_vision_observation(
+        self,
+        message_id: str,
+        user_id: str,
+        *,
+        image_sha256: str,
+        vision_observation: str,
+        vision_confidence: float,
+        vision_model_ms: int,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        with self._connection(connection, write=True) as active_connection:
+            cursor = active_connection.execute(
+                """
+                UPDATE messages
+                SET image_sha256 = ?, vision_observation = ?, vision_confidence = ?,
+                    vision_model_ms = ?
+                WHERE id = ? AND user_id = ? AND role = 'user'
+                """,
+                (
+                    image_sha256,
+                    vision_observation,
+                    vision_confidence,
+                    vision_model_ms,
+                    message_id,
+                    user_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError("user message not found")
+            row = active_connection.execute(
+                "SELECT * FROM messages WHERE id = ?", (message_id,)
+            ).fetchone()
+        return dict(row)
+
     def conversation_belongs_to_user(
         self,
         conversation_id: str,

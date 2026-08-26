@@ -226,7 +226,10 @@ class AuthService:
             }
             messages = rows(
                 """
-                SELECT id, conversation_id, role, content, request_id, created_at
+                SELECT id, conversation_id, role, content, request_id,
+                       image_sha256, vision_observation, vision_confidence,
+                       vision_model_ms,
+                       created_at
                 FROM messages WHERE user_id = ? ORDER BY created_at, id
                 """
             )

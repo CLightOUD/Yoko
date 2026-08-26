@@ -29,6 +29,7 @@ from backend.app.services import MemoryService, MetricsService, ReminderService
 from backend.app.services.auth_service import AuthService
 from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
+from backend.app.services.vision_contract import VisionAnalyzer
 
 load_dotenv()
 logger = logging.getLogger("yoko.http")
@@ -40,6 +41,7 @@ def create_app(
     database: Database | None = None,
     agent: AgentRuntime | None = None,
     auth_service: AuthService | None = None,
+    vision_analyzer: VisionAnalyzer | None = None,
     frontend_dist: Path | None = DEFAULT_FRONTEND_DIST,
 ) -> FastAPI:
     configure_logging()
@@ -59,6 +61,7 @@ def create_app(
             reminder_service=reminder_service,
             metrics_service=metrics_service,
             agent=agent or LangChainAgent(),
+            vision_analyzer=vision_analyzer,
         )
         app.state.database = active_database
         app.state.auth_service = active_auth_service

@@ -160,11 +160,11 @@ def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(
         {"id": "daily", "title": "吃降压药", "status": "active"},
     ]
     assert unique_index is not None
-    assert versions == [1, 2, 3]
+    assert versions == [1, 2, 3, 4]
     assert path.with_name("legacy.pre-migration-v1.bak").exists()
 
 
-def test_v2_to_v3_migration_preserves_owned_business_data(tmp_path) -> None:
+def test_v2_to_latest_migration_preserves_owned_business_data(tmp_path) -> None:
     path = tmp_path / "v2.db"
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -230,10 +230,19 @@ def test_v2_to_v3_migration_preserves_owned_business_data(tmp_path) -> None:
             """
         ).fetchone()
 
-    assert database.schema_version() == 3
+    assert database.schema_version() == 4
     assert counts == {table: 1 for table in counts}
     assert owners == {table: "legacy-user" for table in owners}
     assert tuple(account) == (None, None, None)
+    with database.connection() as migrated:
+        message = migrated.execute(
+            """
+            SELECT image_sha256, vision_observation, vision_confidence,
+                   vision_model_ms
+            FROM messages WHERE id = 'message-1'
+            """
+        ).fetchone()
+    assert tuple(message) == (None, None, None, None)
 
 
 def test_failed_migration_rolls_back_version_and_schema(tmp_path, monkeypatch) -> None:
