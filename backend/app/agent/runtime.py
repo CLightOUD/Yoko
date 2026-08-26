@@ -232,6 +232,7 @@ class PendingReminderMutation:
                 result,
                 status="needs_clarification",
                 reply=self.validation_reply,
+                tool_calls=[],
                 tool_ms=result.tool_ms + latency_ms,
                 pending_reminder_mutation=None,
             )
@@ -247,7 +248,7 @@ class PendingReminderMutation:
             )
             return replace(
                 result,
-                status="needs_clarification",
+                status="partial",
                 reply=f"{exc}。我先不改动现有提醒，您换个时间告诉我就行。",
                 tool_calls=[*result.tool_calls, failed],
                 tool_ms=result.tool_ms + latency_ms,
@@ -1319,8 +1320,13 @@ class LangChainAgent:
             "版本放入 discarded_interpretations。不要使用关键词白名单，应理解否定、假设、引用、"
             "指代和常见错别字。一个时段限定后重复同一钟点仍属于同一个明确时间，例如‘早上八点，"
             "我一般八点起来’；但单独的‘十一点’若无法确定上午或晚上，应生成自然的澄清问题。"
+            "cancelled 只表示用户撤回原本准备执行的创建、修改或删除操作；‘取消某条提醒’‘把某条"
+            "提醒去掉’本身是有效的 delete 操作，此时 cancelled 必须为 false、active_operation 必须"
+            "为 delete。只有用户随后又说‘算了，别删了’时，才表示撤回删除。"
             "只有当前轮确实要求两个以上独立写操作时 multiple_operations 才为 true，提到既有提醒"
-            "不算新操作。相关 preferred_time 记忆可以补齐用户省略的钟点。clarification_questions"
+            "不算新操作；先前因服务失败而没有完成的请求，也不得在用户提出新的单条操作时自动合并"
+            "到当前轮，除非当前用户明确要求‘两件都办’或再次确认旧请求。相关 preferred_time 记忆"
+            "可以补齐用户省略的钟点。clarification_questions"
             "只放阻止本轮执行所必需、可直接问用户的简短中文问题；信息完整时必须为空。"
             "evidence_message_numbers 使用 U 标签中的数字，必须包含支持当前操作或补充信息的当前"
             "用户消息。normalized_text 用一句简洁中文忠实表达最终语义，不得添加原文没有的决定。"

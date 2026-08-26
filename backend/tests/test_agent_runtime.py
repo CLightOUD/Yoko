@@ -6,7 +6,7 @@ import pytest
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from backend.app.agent import LangChainAgent
+from backend.app.agent import AgentRunResult, LangChainAgent, PendingReminderMutation
 from backend.app.agent.runtime import (
     MutationSafetyMiddleware,
     SearchPlan,
@@ -17,9 +17,9 @@ from backend.app.agent.runtime import (
     WebEvidenceSelectionResult,
 )
 from backend.app.database import Database
-from backend.app.schemas import ReminderCreateRequest, ReminderListQuery
+from backend.app.schemas import ReminderCreateRequest, ReminderListQuery, ToolCallView
 from backend.app.services import MemoryService, ReminderService
-from backend.app.services.errors import ModelUnavailableError
+from backend.app.services.errors import ModelUnavailableError, ResourceConflictError
 from backend.app.services.vision_contract import VisionObservation
 from backend.app.services.web_search_service import (
     WebSearchResponse,
@@ -30,6 +30,67 @@ from backend.app.services.web_search_service import (
 ORIGINAL_PREPROCESS_SEMANTICS = LangChainAgent._preprocess_semantics
 ORIGINAL_PLAN_WEB_SEARCH = LangChainAgent._plan_web_search
 ORIGINAL_SELECT_WEB_EVIDENCE = LangChainAgent._select_web_evidence
+
+
+def _pending_test_result(mutation: PendingReminderMutation) -> AgentRunResult:
+    return AgentRunResult(
+        status="completed",
+        reply="准备处理提醒。",
+        used_memory_ids=[],
+        tool_calls=[
+            ToolCallView(
+                tool_name="list_reminders",
+                status="success",
+                summary="已读取现有提醒",
+                latency_ms=1,
+            )
+        ],
+        model_call_count=1,
+        input_tokens=10,
+        output_tokens=5,
+        memory_tokens=0,
+        model_ms=1,
+        tool_ms=1,
+        pending_reminder_mutation=mutation,
+    )
+
+
+def test_pending_mutation_validation_failure_returns_schema_safe_clarification(
+    tmp_path,
+) -> None:
+    database = Database(tmp_path / "pending-validation.db")
+    database.initialize()
+    mutation = PendingReminderMutation(
+        tool_name="create_reminder",
+        execute=lambda connection: (_ for _ in ()).throw(ValueError("时间冲突")),
+        validation_reply="这个时间已有安排，请换个时间。",
+    )
+
+    with database.transaction() as connection:
+        result = mutation.apply(_pending_test_result(mutation), connection=connection)
+
+    assert result.status == "needs_clarification"
+    assert result.tool_calls == []
+    assert result.pending_reminder_mutation is None
+
+
+def test_pending_mutation_conflict_is_partial_with_failed_tool(tmp_path) -> None:
+    database = Database(tmp_path / "pending-conflict.db")
+    database.initialize()
+    mutation = PendingReminderMutation(
+        tool_name="create_reminder",
+        execute=lambda connection: (_ for _ in ()).throw(
+            ResourceConflictError("提醒已经变化")
+        ),
+        validation_reply="请重新确认。",
+    )
+
+    with database.transaction() as connection:
+        result = mutation.apply(_pending_test_result(mutation), connection=connection)
+
+    assert result.status == "partial"
+    assert result.tool_calls[-1].status == "failed"
+    assert result.pending_reminder_mutation is None
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +215,8 @@ def test_semantic_preprocessor_returns_structured_frame_and_usage() -> None:
     assert isinstance(calls[0][0], SystemMessage)
     assert isinstance(calls[0][1], HumanMessage)
     assert "requires_web" in calls[0][0].content
+    assert "本身是有效的 delete 操作" in calls[0][0].content
+    assert "不得在用户提出新的单条操作时自动合并" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["recent_history"][0]["vision_observation"]["medical_content"]
     assert "不生成搜索词" in calls[0][0].content
