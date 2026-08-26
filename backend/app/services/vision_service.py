@@ -72,7 +72,7 @@ class VisionService:
         try:
             structured_model = model.with_structured_output(
                 VisionObservation,
-                method="json_mode",
+                method="function_calling",
                 include_raw=True,
             )
             # The request contains the complete image data URL. Keep this call

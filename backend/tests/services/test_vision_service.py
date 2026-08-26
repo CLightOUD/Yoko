@@ -75,7 +75,10 @@ def test_analyze_sends_text_and_data_url_and_returns_observation() -> None:
 
     assert result == _observation()
     assert model.schema is VisionObservation
-    assert model.options == {"method": "json_mode", "include_raw": True}
+    assert model.options == {
+        "method": "function_calling",
+        "include_raw": True,
+    }
     assert structured.messages is not None
     assert isinstance(structured.messages[0], SystemMessage)
     assert "JSON" in structured.messages[0].content
