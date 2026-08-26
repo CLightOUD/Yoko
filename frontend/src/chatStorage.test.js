@@ -68,3 +68,23 @@ test('current messages take priority when the history limit is reached', () => {
   assert.equal(loaded.messages.length, MAX_CHAT_HISTORY)
   assert.deepEqual(loaded.archivedMessages, [])
 })
+
+test('image preview data is never persisted or restored', () => {
+  const values = installStorage()
+  const rawImage = 'data:image/png;base64,c2Vuc2l0aXZl'
+
+  saveChatHistory('user-1', {
+    messages: [{ id: 'image', text: '看看图片', imagePreviewUrl: rawImage }],
+    archivedMessages: [{ id: 'blob', imagePreviewUrl: 'blob:local-preview' }],
+    conversationId: 'conversation-image',
+  })
+
+  const stored = [...values.values()].join('')
+  assert.equal(stored.includes(rawImage), false)
+  assert.equal(stored.includes('blob:local-preview'), false)
+  assert.deepEqual(loadChatHistory('user-1'), {
+    messages: [{ id: 'image', text: '看看图片' }],
+    archivedMessages: [{ id: 'blob' }],
+    conversationId: 'conversation-image',
+  })
+})

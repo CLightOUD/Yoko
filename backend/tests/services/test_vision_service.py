@@ -4,6 +4,7 @@ import logging
 
 import httpx
 import pytest
+from langchain_core.tracers.context import _tracing_v2_is_enabled
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
@@ -37,6 +38,12 @@ class FakeStructuredModel:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class TracingAwareStructuredModel(FakeStructuredModel):
+    def invoke(self, messages):
+        assert _tracing_v2_is_enabled() is False
+        return super().invoke(messages)
 
 
 class FakeModel:
@@ -98,6 +105,18 @@ def test_analyze_accepts_a_parsed_mapping() -> None:
 
     assert isinstance(result, VisionObservation)
     assert result.visible_text == ["每日一次"]
+
+
+def test_analyze_disables_tracing_for_image_payload(monkeypatch) -> None:
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    structured = TracingAwareStructuredModel(
+        result={"raw": object(), "parsed": _observation()}
+    )
+
+    VisionService(model=FakeModel(structured)).analyze(
+        image=ChatImageInput(media_type="image/png", data="AA=="),
+        message="读取图片",
+    )
 
 
 @pytest.mark.parametrize(
@@ -211,7 +230,7 @@ def test_failure_logs_do_not_include_image_message_or_exception_text(caplog) -> 
     assert "sk-secret-key" not in log_text
 
 
-def test_build_model_uses_frozen_vision_model_and_existing_provider_env(
+def test_build_model_prefers_independent_vision_configuration(
     monkeypatch,
 ) -> None:
     captured = {}
@@ -220,9 +239,13 @@ def test_build_model_uses_frozen_vision_model_and_existing_provider_env(
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_API_KEY", "main-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://main.example.test")
+    monkeypatch.setenv("VISION_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("VISION_MODEL_NAME", "vision-test-model")
+    monkeypatch.setenv("VISION_API_KEY", "vision-key")
+    monkeypatch.setenv("VISION_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setattr(
         "backend.app.services.vision_service.ChatOpenAI",
         FakeChatOpenAI,
@@ -232,8 +255,8 @@ def test_build_model_uses_frozen_vision_model_and_existing_provider_env(
 
     assert isinstance(model, FakeChatOpenAI)
     assert captured == {
-        "model": VISION_MODEL_NAME,
-        "api_key": "test-key",
+        "model": "vision-test-model",
+        "api_key": "vision-key",
         "base_url": "https://api.deepseek.com",
         "temperature": 0,
         "max_retries": 1,
@@ -242,13 +265,45 @@ def test_build_model_uses_frozen_vision_model_and_existing_provider_env(
     }
 
 
+def test_build_model_falls_back_to_main_openai_configuration(monkeypatch) -> None:
+    captured = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.delenv("VISION_MODEL_PROVIDER", raising=False)
+    monkeypatch.delenv("VISION_MODEL_NAME", raising=False)
+    monkeypatch.delenv("VISION_API_KEY", raising=False)
+    monkeypatch.delenv("VISION_BASE_URL", raising=False)
+    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "main-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://main.example.test")
+    monkeypatch.setattr(
+        "backend.app.services.vision_service.ChatOpenAI",
+        FakeChatOpenAI,
+    )
+
+    VisionService._build_model()
+
+    assert captured["model"] == VISION_MODEL_NAME
+    assert captured["api_key"] == "main-key"
+    assert captured["base_url"] == "https://main.example.test"
+
+
 def test_build_model_requires_supported_provider_and_credentials(monkeypatch) -> None:
-    monkeypatch.setenv("MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("VISION_MODEL_PROVIDER", "anthropic")
     with pytest.raises(ModelUnavailableError, match="暂不支持视觉模型供应商"):
         VisionService._build_model()
 
-    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("VISION_MODEL_PROVIDER", "openai")
+    monkeypatch.delenv("VISION_API_KEY", raising=False)
+    monkeypatch.delenv("VISION_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    with pytest.raises(ModelUnavailableError, match="未配置视觉模型 API 凭据"):
+        VisionService._build_model()
+
+    monkeypatch.setenv("VISION_BASE_URL", "https://api.deepseek.com")
     with pytest.raises(ModelUnavailableError, match="未配置视觉模型 API 凭据"):
         VisionService._build_model()

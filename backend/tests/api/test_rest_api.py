@@ -229,6 +229,7 @@ def test_validation_and_service_errors_use_error_response(client) -> None:
 def test_chat_rejects_images_until_the_vision_service_is_connected(
     client, api_app
 ) -> None:
+    api_app.state.chat_service.vision_analyzer = None
     response = client.post(
         "/api/chat",
         json={
@@ -244,6 +245,12 @@ def test_chat_rejects_images_until_the_vision_service_is_connected(
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "MODEL_UNAVAILABLE"
     assert api_app.state.test_agent.call_count == 0
+
+
+def test_app_connects_the_default_vision_service(client, api_app) -> None:
+    from backend.app.services.vision_service import VisionService
+
+    assert isinstance(api_app.state.chat_service.vision_analyzer, VisionService)
 
 
 def test_chat_analyzes_image_once_and_persists_only_safe_metadata(

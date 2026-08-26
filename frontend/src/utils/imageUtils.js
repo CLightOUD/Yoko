@@ -52,15 +52,10 @@ export function fileToBase64(file) {
 }
 
 /**
- * 将 File 对象转换为 Data URL，用于预览显示。
+ * 创建仅在当前页面生命周期内有效的图片预览 URL。
  */
 export function fileToPreviewUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(/** @type {string} */ (reader.result))
-    reader.onerror = () => reject(new Error('读取预览失败'))
-    reader.readAsDataURL(file)
-  })
+  return URL.createObjectURL(file)
 }
 
 export { ALLOWED_TYPES, MAX_FILE_SIZE, MIME_TO_EXT }

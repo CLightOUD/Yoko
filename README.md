@@ -116,6 +116,11 @@ The local `.env` file has been created with empty model credentials. Fill in
 `MODEL_NAME`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL` when required. Never
 commit `.env`.
 
+Image understanding uses the independent `VISION_MODEL_NAME`,
+`VISION_API_KEY`, and `VISION_BASE_URL` settings. If the vision key or base URL
+is empty, the corresponding `OPENAI_*` setting is used as a compatibility
+fallback. Image requests are never sent to LangSmith tracing.
+
 Authentication defaults are:
 
 ```text
@@ -263,6 +268,10 @@ npm.cmd run dev
 
 本地 `.env` 文件由 `.env.example` 创建，模型凭据默认为空。需要调用模型时，
 请填写 `MODEL_NAME`、`OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要提交 `.env`。
+
+图片理解使用独立的 `VISION_MODEL_NAME`、`VISION_API_KEY` 和
+`VISION_BASE_URL`。视觉 Key 或地址留空时，会兼容回退到对应的 `OPENAI_*`
+配置。图片请求不会发送到 LangSmith 链路追踪。
 
 认证配置默认值：
 

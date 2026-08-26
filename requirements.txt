@@ -3,6 +3,7 @@ pydantic>=2.12,<3
 uvicorn[standard]>=0.30,<1
 langchain>=1,<2
 langchain-openai>=1,<2
+langsmith>=0.11,<1
 Pillow>=12,<13
 tiktoken>=0.8,<1
 python-dotenv>=1,<2

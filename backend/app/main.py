@@ -30,6 +30,7 @@ from backend.app.services.auth_service import AuthService
 from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
 from backend.app.services.vision_contract import VisionAnalyzer
+from backend.app.services.vision_service import VisionService
 
 load_dotenv()
 logger = logging.getLogger("yoko.http")
@@ -61,7 +62,7 @@ def create_app(
             reminder_service=reminder_service,
             metrics_service=metrics_service,
             agent=agent or LangChainAgent(),
-            vision_analyzer=vision_analyzer,
+            vision_analyzer=vision_analyzer or VisionService(),
         )
         app.state.database = active_database
         app.state.auth_service = active_auth_service
@@ -113,7 +114,7 @@ def create_app(
             )
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self'; "
-                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
                 "connect-src 'self'; object-src 'none'; base-uri 'self'; "
                 "frame-ancestors 'none'; form-action 'self'"
             )

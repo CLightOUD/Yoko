@@ -8,6 +8,7 @@ import httpx
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langsmith.run_helpers import tracing_context
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import ValidationError
 
@@ -74,12 +75,15 @@ class VisionService:
                 method="json_mode",
                 include_raw=True,
             )
-            result = structured_model.invoke(
-                [
-                    SystemMessage(content=_VISION_SYSTEM_PROMPT),
-                    HumanMessage(content=user_content),
-                ]
-            )
+            # The request contains the complete image data URL. Keep this call
+            # out of LangSmith even when tracing is enabled for the main agent.
+            with tracing_context(enabled=False):
+                result = structured_model.invoke(
+                    [
+                        SystemMessage(content=_VISION_SYSTEM_PROMPT),
+                        HumanMessage(content=user_content),
+                    ]
+                )
             parsed = result.get("parsed") if isinstance(result, dict) else None
             if parsed is None:
                 raise ValueError("missing parsed vision observation")
@@ -117,19 +121,37 @@ class VisionService:
 
     @staticmethod
     def _build_model() -> ChatOpenAI:
-        provider = os.getenv("MODEL_PROVIDER", "openai").strip().lower()
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        provider = os.getenv(
+            "VISION_MODEL_PROVIDER",
+            os.getenv("MODEL_PROVIDER", "openai"),
+        ).strip().lower()
+        model_name = (
+            os.getenv("VISION_MODEL_NAME", "").strip() or VISION_MODEL_NAME
+        )
+        api_key = (
+            os.getenv("VISION_API_KEY", "").strip()
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        )
+        base_url = (
+            os.getenv("VISION_BASE_URL", "").strip()
+            or os.getenv("OPENAI_BASE_URL", "").strip()
+            or None
+        )
         if provider != "openai":
             raise ModelUnavailableError(f"暂不支持视觉模型供应商：{provider}")
-        if not api_key and base_url is None:
+        hosted_service_requires_key = (
+            base_url is None
+            or "api.deepseek.com" in base_url.lower()
+            or "api.openai.com" in base_url.lower()
+        )
+        if not api_key and hosted_service_requires_key:
             raise ModelUnavailableError("未配置视觉模型 API 凭据")
 
         options: dict[str, Any] = {}
         if base_url is not None and "api.deepseek.com" in base_url.lower():
             options["extra_body"] = {"thinking": {"type": "disabled"}}
         return ChatOpenAI(
-            model=VISION_MODEL_NAME,
+            model=model_name,
             api_key=api_key or "not-required",
             base_url=base_url,
             temperature=0,

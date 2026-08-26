@@ -17,8 +17,21 @@ function trimMessages(messages, limit = MAX_CHAT_HISTORY) {
   return messages.slice(-limit)
 }
 
+export function stripTransientImageData(message) {
+  if (!message || typeof message !== 'object') return message
+  const { imagePreviewUrl: _imagePreviewUrl, ...persistentMessage } = message
+  return persistentMessage
+}
+
+function sanitizeMessages(messages) {
+  return (messages ?? []).map(stripTransientImageData)
+}
+
 export function archiveConversation(archivedMessages, currentMessages) {
-  return trimMessages([...(archivedMessages ?? []), ...(currentMessages ?? [])])
+  return trimMessages(sanitizeMessages([
+    ...(archivedMessages ?? []),
+    ...(currentMessages ?? []),
+  ]))
 }
 
 export function loadChatHistory(userId) {
@@ -27,8 +40,10 @@ export function loadChatHistory(userId) {
     if (raw) {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages)) {
-        const messages = trimMessages(parsed.messages)
-        const archivedMessages = trimMessages(parsed.archivedMessages ?? [])
+        const messages = trimMessages(sanitizeMessages(parsed.messages))
+        const archivedMessages = trimMessages(
+          sanitizeMessages(parsed.archivedMessages ?? []),
+        )
         return {
           messages,
           archivedMessages: trimMessages([
@@ -49,7 +64,7 @@ export function loadChatHistory(userId) {
       const old = JSON.parse(oldRaw)
       if (old && Array.isArray(old.messages)) {
         const migrated = {
-          messages: trimMessages(old.messages),
+          messages: trimMessages(sanitizeMessages(old.messages)),
           archivedMessages: [],
           conversationId: old.conversationId ?? null,
         }
@@ -69,9 +84,9 @@ export function saveChatHistory(
   userId,
   { messages, archivedMessages, conversationId },
 ) {
-  const current = trimMessages(messages ?? [])
+  const current = trimMessages(sanitizeMessages(messages ?? []))
   let archived = trimMessages(
-    archivedMessages ?? [],
+    sanitizeMessages(archivedMessages ?? []),
     Math.max(0, MAX_CHAT_HISTORY - current.length),
   )
   try {

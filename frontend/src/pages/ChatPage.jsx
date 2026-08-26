@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   History,
   Plus,
@@ -31,6 +31,7 @@ import {
   clearChatHistory,
   loadChatHistory,
   saveChatHistory,
+  stripTransientImageData,
 } from '../chatStorage.js'
 import { validateImageFile, fileToBase64, fileToPreviewUrl } from '../utils/imageUtils.js'
 
@@ -45,7 +46,7 @@ function exportChatHistory(userId, messages) {
     exported_at: new Date().toISOString(),
     user_id: userId,
     message_count: messages.length,
-    messages: messages.map((m) => ({
+    messages: messages.map(stripTransientImageData).map((m) => ({
       role: m.role,
       text: m.text,
       time: m.time ? new Date(m.time).toISOString() : null,
@@ -470,6 +471,7 @@ export default function ChatPage() {
   const [conversationId, setConversationId] = useState(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [preparingImage, setPreparingImage] = useState(false)
   const [error, setError] = useState(null)
   const [retryRequest, setRetryRequest] = useState(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -483,9 +485,37 @@ export default function ChatPage() {
   const abortRef = useRef(null)
   const rateTimerRef = useRef(null)
   const fileInputRef = useRef(null)
+  const submittingRef = useRef(false)
+  const previewUrlsRef = useRef(new Set())
+
+  const busy = loading || preparingImage
+
+  function revokePreviewUrl(url) {
+    if (!url) return
+    URL.revokeObjectURL(url)
+    previewUrlsRef.current.delete(url)
+  }
+
+  function revokeAllPreviewUrls() {
+    for (const url of previewUrlsRef.current) {
+      URL.revokeObjectURL(url)
+    }
+    previewUrlsRef.current.clear()
+  }
+
+  useEffect(() => () => {
+    for (const url of previewUrlsRef.current) {
+      URL.revokeObjectURL(url)
+    }
+    previewUrlsRef.current.clear()
+  }, [])
 
   // 惰性恢复上次会话
   useEffect(() => {
+    for (const url of previewUrlsRef.current) {
+      URL.revokeObjectURL(url)
+    }
+    previewUrlsRef.current.clear()
     const stored = loadChatHistory(userId)
     setMessages(stored.messages ?? [])
     setArchivedMessages(stored.archivedMessages ?? [])
@@ -516,7 +546,7 @@ export default function ChatPage() {
     return () => clearTimeout(rateTimerRef.current)
   }, [rateCountdown])
 
-  const submitChat = useCallback(async (request, { appendUser, image }) => {
+  async function submitChat(request, { appendUser, image }) {
     setError(null)
     setImageError(null)
     if (appendUser) {
@@ -567,11 +597,13 @@ export default function ChatPage() {
           feedback: {},
         },
       ])
-      // 发送成功后清空图片
-      setSelectedImage(null)
-      setImagePreviewUrl(null)
       if (image?.previewUrl) {
-        URL.revokeObjectURL(image.previewUrl)
+        revokePreviewUrl(image.previewUrl)
+        setMessages((prev) => prev.map((message) => (
+          message.imagePreviewUrl === image.previewUrl
+            ? stripTransientImageData(message)
+            : message
+        )))
       }
     } catch (err) {
       const errInfo = getErrorDisplay(err)
@@ -582,15 +614,19 @@ export default function ChatPage() {
       }
     } finally {
       setLoading(false)
+      submittingRef.current = false
       abortRef.current = null
     }
-  }, [timezone])
+  }
 
   async function handleSend() {
     const text = input.trim()
     const hasImage = selectedImage != null
-    if ((!text && !hasImage) || loading) return
+    if (!text || busy || submittingRef.current) return
     if (rateCountdown != null && rateCountdown > 0) return
+
+    submittingRef.current = true
+    setPreparingImage(true)
 
     // 先进行 Base64 转换（可能耗时），转换期间禁用输入
     let imageInfo = null
@@ -605,9 +641,13 @@ export default function ChatPage() {
         }
       } catch {
         setImageError('图片编码失败，请重试')
+        submittingRef.current = false
+        setPreparingImage(false)
         return
       }
     }
+
+    setPreparingImage(false)
 
     const request = {
       text,
@@ -619,15 +659,21 @@ export default function ChatPage() {
     setRetryRequest(null)
     setError(null)
     setImageError(null)
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
 
-    submitChat(request, { appendUser: true, image: imageInfo })
+    void submitChat(request, { appendUser: true, image: imageInfo })
   }
 
   function handleRetry() {
-    if (!retryRequest || loading) return
+    if (!retryRequest || busy || submittingRef.current) return
+    submittingRef.current = true
     // 重试时不需要重新转 Base64——图片已在 handleSend 时转换
     const imageInfo = retryRequest.imageInfo ?? null
-    submitChat(retryRequest, { appendUser: false, image: imageInfo })
+    void submitChat(retryRequest, { appendUser: false, image: imageInfo })
   }
 
   function handleKeyDown(event) {
@@ -644,22 +690,27 @@ export default function ChatPage() {
     const result = validateImageFile(file)
     if (!result.valid) {
       setImageError(result.error)
+      event.target.value = ''
       return
     }
 
+    revokePreviewUrl(imagePreviewUrl)
     setImageError(null)
-    fileToPreviewUrl(file).then((url) => {
+    setRetryRequest(null)
+    setError(null)
+    try {
+      const url = fileToPreviewUrl(file)
+      previewUrlsRef.current.add(url)
       setSelectedImage(file)
       setImagePreviewUrl(url)
-    }).catch(() => {
+    } catch {
       setImageError('图片预览加载失败')
-    })
+      event.target.value = ''
+    }
   }
 
   function handleRemoveImage() {
-    if (imagePreviewUrl) {
-      URL.revokeObjectURL(imagePreviewUrl)
-    }
+    revokePreviewUrl(imagePreviewUrl)
     setSelectedImage(null)
     setImagePreviewUrl(null)
     setImageError(null)
@@ -685,27 +736,35 @@ export default function ChatPage() {
   }
 
   function handleNewChat() {
-    if (loading) return
+    if (busy) return
     const confirmed = messages.length === 0 || window.confirm('开始新对话将清空当前对话视图（本地记录仍保留）。是否继续？')
     if (!confirmed) return
     setArchivedMessages((prev) => archiveConversation(prev, messages))
+    revokeAllPreviewUrls()
     setMessages([])
     setConversationId(null)
     setError(null)
     setRetryRequest(null)
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
     setHistoryOpen(false)
   }
 
   function handleClearHistory() {
-    if (loading) return
+    if (busy) return
     const confirmed = window.confirm('确定要清空本地所有聊天记录吗？此操作不可恢复。')
     if (!confirmed) return
     clearChatHistory(userId)
+    revokeAllPreviewUrls()
     setMessages([])
     setArchivedMessages([])
     setConversationId(null)
     setError(null)
     setRetryRequest(null)
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
     setHistoryOpen(false)
   }
 
@@ -749,7 +808,7 @@ export default function ChatPage() {
           type="button"
           className="btn btn--secondary btn--small"
           onClick={handleNewChat}
-          disabled={loading}
+          disabled={busy}
           title="开始新的对话"
         >
           <Plus aria-hidden="true" />
@@ -780,6 +839,11 @@ export default function ChatPage() {
                   {msg.imageFileName && (
                     <span className="chat-image-preview__name">{msg.imageFileName}</span>
                   )}
+                </div>
+              )}
+              {!msg.imagePreviewUrl && msg.imageFileName && (
+                <div className="chat-image-preview__name">
+                  已附图片：{msg.imageFileName}
                 </div>
               )}
               {msg.text}
@@ -832,10 +896,10 @@ export default function ChatPage() {
               className="btn btn--secondary btn--small"
               type="button"
               onClick={handleRetry}
-              disabled={loading || (rateCountdown != null && rateCountdown > 0)}
+              disabled={busy || (rateCountdown != null && rateCountdown > 0)}
             >
               <RefreshCw aria-hidden="true" />
-              {loading ? '重试中…' : '重试发送'}
+              {busy ? '重试中…' : '重试发送'}
             </button>
           )}
         </div>
@@ -865,7 +929,7 @@ export default function ChatPage() {
             className="icon-btn composer-image-preview__remove"
             onClick={handleRemoveImage}
             aria-label="移除图片"
-            disabled={loading}
+            disabled={busy}
           >
             <X aria-hidden="true" size={18} />
           </button>
@@ -887,7 +951,7 @@ export default function ChatPage() {
           type="button"
           className="icon-btn composer__image-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={loading || (rateCountdown != null && rateCountdown > 0)}
+          disabled={busy || (rateCountdown != null && rateCountdown > 0)}
           title="添加图片"
           aria-label="添加图片"
         >
@@ -896,20 +960,24 @@ export default function ChatPage() {
         <textarea
           rows={1}
           value={input}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            setInput(event.target.value)
+            setRetryRequest(null)
+            setError(null)
+          }}
           onKeyDown={handleKeyDown}
           placeholder="请输入消息，例如：明天晚上7点提醒我吃药"
           aria-label="消息输入框"
-          disabled={loading || (rateCountdown != null && rateCountdown > 0)}
+          disabled={busy || (rateCountdown != null && rateCountdown > 0)}
         />
         <button
           className="btn"
           type="button"
           onClick={handleSend}
-          disabled={loading || (!input.trim() && !selectedImage) || (rateCountdown != null && rateCountdown > 0)}
+          disabled={busy || !input.trim() || (rateCountdown != null && rateCountdown > 0)}
         >
           <Send aria-hidden="true" />
-          {loading ? '发送中…' : '发送'}
+          {busy ? '发送中…' : '发送'}
         </button>
       </div>
 
@@ -921,7 +989,7 @@ export default function ChatPage() {
         onClear={handleClearHistory}
         onExport={handleExportHistory}
         messages={[...archivedMessages, ...messages]}
-        busy={loading}
+        busy={busy}
       />
     </div>
   )

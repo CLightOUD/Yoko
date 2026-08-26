@@ -82,16 +82,20 @@ test('fileToBase64: converts file to raw base64 string', async () => {
   }
 })
 
-test('fileToBase64 and fileToPreviewUrl are consistent', async () => {
-  const restore = installFileReader()
+test('fileToPreviewUrl creates a temporary object URL without Base64', () => {
+  const originalCreateObjectURL = URL.createObjectURL
+  let received = null
+  URL.createObjectURL = (file) => {
+    received = file
+    return 'blob:test-preview'
+  }
   try {
     const file = makeFile([0x00, 0x01, 0x02], 'image/png', 'tiny.png')
-    const base64 = await fileToBase64(file)
-    const preview = await fileToPreviewUrl(file)
-    assert.ok(preview.startsWith('data:image/png;base64,'))
-    assert.ok(preview.endsWith(base64))
+    const preview = fileToPreviewUrl(file)
+    assert.equal(preview, 'blob:test-preview')
+    assert.equal(received, file)
   } finally {
-    restore()
+    URL.createObjectURL = originalCreateObjectURL
   }
 })
 
