@@ -48,8 +48,11 @@ export default function ReminderAlarm() {
   const [ackError, setAckError] = useState('')
   const seenRef = useRef(new Set())
   const notifiedRef = useRef(new Set())
+  const pollingRef = useRef(false)
 
   const poll = useCallback(async () => {
+    if (pollingRef.current) return
+    pollingRef.current = true
     try {
       const res = await listDueReminders({ limit: 20 })
       const items = res.items ?? []
@@ -71,6 +74,8 @@ export default function ReminderAlarm() {
       })
     } catch {
       // 轮询失败静默，下一轮自动重试
+    } finally {
+      pollingRef.current = false
     }
   }, [])
 

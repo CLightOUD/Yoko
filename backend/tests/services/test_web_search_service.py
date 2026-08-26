@@ -60,6 +60,35 @@ def test_bing_search_parses_deduplicates_and_caches_results() -> None:
     assert len(second.results) == 1
 
 
+def test_search_cache_evicts_least_recently_used_entry() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["q"]
+        calls.append(query)
+        return httpx.Response(
+            200,
+            text=(
+                '<li class="b_algo"><h2><a href="https://example.com/'
+                f'{query}">{query}</a></h2><p>摘要</p></li>'
+            ),
+            request=request,
+        )
+
+    service = WebSearchService(
+        client=_client(handler),
+        minimum_interval_seconds=0,
+        search_cache_max_entries=2,
+    )
+    service.search("first")
+    service.search("second")
+    service.search("third")
+    service.search("first")
+
+    assert calls == ["first", "second", "third", "first"]
+    assert len(service._cache) == 2
+
+
 def test_search_query_removes_common_direct_identifiers() -> None:
     observed_query = ""
     html = """

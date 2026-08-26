@@ -209,6 +209,47 @@ def test_chat_idempotency_returns_cached_response_without_duplicate_writes(clien
     assert dict(request_row) == {"status": "completed", "attempt_count": 1}
 
 
+def test_chat_request_status_returns_completed_cached_response(client) -> None:
+    key = "chat-request-status-0001"
+    completed = client.post(
+        "/api/chat",
+        json={"message": "查询最终状态"},
+        headers={"Idempotency-Key": key},
+    )
+
+    status = client.get(f"/api/chat/requests/{key}")
+
+    assert completed.status_code == 200
+    assert status.status_code == 200
+    assert status.json() == {
+        "request_id": completed.json()["request_id"],
+        "status": "completed",
+        "response": completed.json(),
+    }
+
+
+def test_chat_request_status_reports_pending_and_hides_unknown_requests(client) -> None:
+    key = "chat-request-status-0002"
+    execution = client.app.state.chat_service._begin(
+        ChatRequest(
+            user_id=client.app.state.test_user_id,
+            message="仍在执行",
+        ),
+        idempotency_key=key,
+    )
+
+    pending = client.get(f"/api/chat/requests/{key}")
+    missing = client.get("/api/chat/requests/chat-request-status-missing")
+
+    assert pending.status_code == 200
+    assert pending.json() == {
+        "request_id": str(execution.request_id),
+        "status": "pending",
+        "response": None,
+    }
+    assert missing.status_code == 404
+
+
 def test_chat_idempotency_rejects_reusing_key_for_different_payload(client) -> None:
     headers = {"Idempotency-Key": "chat-request-0002"}
     first = client.post(

@@ -100,6 +100,37 @@ def test_retrieve_returns_task_then_global_and_marks_only_owned_memory(
     ) == 1
 
 
+def test_candidate_retrieval_keeps_an_older_task_among_recent_unrelated_memories(
+    database: Database,
+) -> None:
+    service = MemoryService(database)
+    appointment = service.upsert(
+        user_id="demo-user",
+        scope="task",
+        task_type="appointment",
+        memory_key="lead_time",
+        memory_value="30m",
+        display_text="预约提前30分钟提醒",
+        reason="明确长期偏好",
+    ).memory
+    for index in range(15):
+        service.upsert(
+            user_id="demo-user",
+            scope="task",
+            task_type="other",
+            memory_key=f"preference_{index}",
+            memory_value=f"value-{index}",
+            display_text=f"近期其他偏好 {index}",
+            reason="测试无关近期记忆",
+        )
+
+    candidates = service.retrieve_candidates(user_id="demo-user")
+
+    assert len(candidates) == 10
+    assert appointment.id in {item.id for item in candidates}
+    assert {item.task_type for item in candidates} == {"appointment", "other"}
+
+
 def test_manual_update_and_delete_are_logged_and_delete_is_idempotent(
     database: Database,
 ) -> None:

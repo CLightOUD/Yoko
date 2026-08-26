@@ -2564,6 +2564,96 @@ def test_model_deduplicates_one_time_plan_covered_by_recurring_reminder(
     assert "没有重复创建" in result.reply
 
 
+def test_model_reports_exact_duplicate_as_successful_deduplication(
+    monkeypatch, tmp_path
+) -> None:
+    zone = ZoneInfo("Asia/Shanghai")
+    trigger = (datetime.now(zone) + timedelta(days=1)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    message = "明天上午九点提醒我吃降压药。"
+    database = Database(tmp_path / "exact-duplicate.db")
+    database.initialize()
+    reminders = ReminderService(database)
+    existing = reminders.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="吃降压药",
+            next_trigger_at=trigger,
+            timezone="Asia/Shanghai",
+            repeat_type="none",
+        )
+    )
+    monkeypatch.setattr(
+        LangChainAgent,
+        "_preprocess_semantics",
+        staticmethod(
+            lambda **kwargs: SemanticPreprocessResult(
+                frame=SemanticFrame(
+                    normalized_text=message,
+                    active_operation="create",
+                    intent="reminder_operation",
+                    reminder_title="吃降压药",
+                    date_text="明天",
+                    time_text="上午九点",
+                    repeat_type="none",
+                    evidence_message_numbers=[1],
+                    confidence=1,
+                ),
+                model_messages=[],
+                model_ms=0,
+            )
+        ),
+    )
+
+    class DuplicateCreateGraph:
+        def __init__(self, tools):
+            self.tools = {item.name: item for item in tools}
+
+        def invoke(self, state):
+            self.tools["create_reminder"].invoke(
+                {
+                    "title": "吃降压药",
+                    "next_trigger_at": trigger.isoformat(),
+                    "repeat_type": "none",
+                    "evidence_message_numbers": [1],
+                    "time_source": "user_explicit",
+                    "time_message_numbers": [1],
+                }
+            )
+            return {
+                "messages": [*state["messages"], AIMessage(content="")],
+                "structured_response": {
+                    "status": "completed",
+                    "reply": "已创建明天上午九点的提醒。",
+                    "reminder_operation": "create",
+                    "used_memory_ids": [],
+                },
+            }
+
+    monkeypatch.setattr(LangChainAgent, "_build_model", staticmethod(lambda: object()))
+    monkeypatch.setattr(
+        "backend.app.agent.runtime.create_agent",
+        lambda **kwargs: DuplicateCreateGraph(kwargs["tools"]),
+    )
+    result = LangChainAgent().run(
+        user_id="demo-user",
+        message=message,
+        timezone="Asia/Shanghai",
+        now=datetime.now(UTC),
+        memories=[],
+        history=[{"role": "user", "content": message}],
+        reminder_service=reminders,
+    )
+
+    active = reminders.list(ReminderListQuery(user_id="demo-user")).items
+    assert active == [existing]
+    assert result.status == "completed"
+    assert [call.status for call in result.tool_calls] == ["success"]
+    assert result.tool_calls[0].summary.startswith("已去重并保留现有提醒")
+    assert "没有重复创建" in result.reply
+
+
 def test_tool_layer_allows_at_most_one_write_per_request(monkeypatch, tmp_path) -> None:
     zone = ZoneInfo("Asia/Shanghai")
     first_trigger = (datetime.now(zone) + timedelta(days=1)).replace(

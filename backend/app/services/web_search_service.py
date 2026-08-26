@@ -4,6 +4,7 @@ import base64
 import ipaddress
 import re
 import socket
+from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from threading import Lock
@@ -202,12 +203,18 @@ class WebSearchService:
         client: httpx.Client | None = None,
         cache_ttl_seconds: float = 900,
         minimum_interval_seconds: float = 1,
+        search_cache_max_entries: int = 128,
+        page_cache_max_entries: int = 256,
     ) -> None:
         self._client = client
         self._cache_ttl_seconds = max(0, cache_ttl_seconds)
         self._minimum_interval_seconds = max(0, minimum_interval_seconds)
-        self._cache: dict[str, tuple[float, tuple[WebSearchResult, ...]]] = {}
-        self._page_cache: dict[str, tuple[float, str]] = {}
+        self._search_cache_max_entries = max(1, search_cache_max_entries)
+        self._page_cache_max_entries = max(1, page_cache_max_entries)
+        self._cache: OrderedDict[
+            str, tuple[float, tuple[WebSearchResult, ...]]
+        ] = OrderedDict()
+        self._page_cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
         self._lock = Lock()
         self._last_request_started = 0.0
 
@@ -273,6 +280,9 @@ class WebSearchService:
             )
         with self._lock:
             self._cache[cache_key] = (monotonic(), results)
+            self._cache.move_to_end(cache_key)
+            while len(self._cache) > self._search_cache_max_entries:
+                self._cache.popitem(last=False)
         return WebSearchResponse(query=safe_query, results=results)
 
     def _request(self, query: str) -> httpx.Response:
@@ -365,6 +375,9 @@ class WebSearchService:
                 if content:
                     with self._lock:
                         self._page_cache[url] = (monotonic(), content)
+                        self._page_cache.move_to_end(url)
+                        while len(self._page_cache) > self._page_cache_max_entries:
+                            self._page_cache.popitem(last=False)
                 return content
             return ""
         except (httpx.HTTPError, UnicodeError, ValueError):
@@ -427,6 +440,7 @@ class WebSearchService:
             if monotonic() - cached_at > self._cache_ttl_seconds:
                 self._page_cache.pop(url, None)
                 return None
+            self._page_cache.move_to_end(url)
             return content
 
     def _get_cached(
@@ -442,6 +456,7 @@ class WebSearchService:
             if monotonic() - cached_at > self._cache_ttl_seconds:
                 self._cache.pop(cache_key, None)
                 return None
+            self._cache.move_to_end(cache_key)
             return results[:limit]
 
     def _wait_for_rate_limit(self) -> None:

@@ -163,16 +163,34 @@ class MemoryService:
         self,
         *,
         user_id: str,
-        limit: int = 3,
+        limit: int = 10,
     ) -> list[MemoryView]:
-        """Return a small neutral candidate set for model-side relevance decisions."""
+        """Return a bounded, task-diverse pool for model-side relevance decisions."""
         self._require_user(user_id)
+        if not 1 <= limit <= 10:
+            raise ValueError("memory candidate limit must be between 1 and 10")
         items, _ = self.memories.list(
             user_id=user_id,
             active=True,
-            limit=limit,
+            limit=100,
         )
-        return [self._to_view(item) for item in items]
+        selected: list[dict] = []
+        selected_ids: set[str] = set()
+
+        # Reserve one slot for every task represented in the recent pool. This keeps
+        # unrelated recent memories from completely hiding an older relevant task.
+        for task_type in ("global", "medication", "walking", "appointment", "other"):
+            item = next((row for row in items if row["task_type"] == task_type), None)
+            if item is not None and len(selected) < limit:
+                selected.append(item)
+                selected_ids.add(item["id"])
+        for item in items:
+            if len(selected) >= limit:
+                break
+            if item["id"] not in selected_ids:
+                selected.append(item)
+                selected_ids.add(item["id"])
+        return [self._to_view(item) for item in selected]
 
     def mark_used(
         self,

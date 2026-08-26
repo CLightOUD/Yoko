@@ -20,6 +20,7 @@ from backend.app.repositories import (
 )
 from backend.app.schemas import (
     ChatRequest,
+    ChatRequestStatusResponse,
     ChatResponse,
     RequestMetrics,
     RetrievedMemory,
@@ -236,7 +237,7 @@ class ChatService:
         retrieval_started = perf_counter()
         memories = self.memory_service.retrieve_candidates(
             user_id=request.user_id,
-            limit=3,
+            limit=10,
         )
         retrieval_ms = max(0, round((perf_counter() - retrieval_started) * 1000))
         history = self.messages.list_recent(
@@ -365,6 +366,27 @@ class ChatService:
             ):
                 raise ResourceConflictError("聊天请求状态发生变化")
         return response
+
+    def get_request_status(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> ChatRequestStatusResponse:
+        request = self.chat_requests.get_by_idempotency_key(
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        if request is None:
+            raise ResourceNotFoundError("聊天请求不存在")
+        response = None
+        if request["status"] == "completed":
+            response = ChatResponse.model_validate_json(request["response_json"])
+        return ChatRequestStatusResponse(
+            request_id=request["id"],
+            status=request["status"],
+            response=response,
+        )
 
     def _analyze_image(
         self,

@@ -183,6 +183,7 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `GET /api/account/export` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND` |
 | `DELETE /api/account` | `401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/chat` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
+| `GET /api/chat/requests/{idempotency_key}` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/feedback` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `GET /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -213,6 +214,7 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `GET` | `/api/account/export` | Cookie: Session | `200` | `AccountExportResponse` |
 | `DELETE` | `/api/account` | Cookie: Session; Body: `AccountDeleteRequest` | `200` | `AccountDeleteResponse` |
 | `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequestBody` | `200` | `ChatResponse` |
+| `GET` | `/api/chat/requests/{idempotency_key}` | Cookie: Session; Path: `idempotency_key` | `200` | `ChatRequestStatusResponse` |
 | `POST` | `/api/feedback` | Body: `FeedbackRequestBody` | `200` | `FeedbackResponse` |
 | `POST` | `/api/reminders` | Body: `ReminderCreateBody` | `201` | `ReminderView` |
 | `GET` | `/api/reminders` | Query: `ReminderListParams` | `200` | `ReminderListResponse` |
@@ -732,7 +734,7 @@ metrics: RequestMetrics
 
 `sources` 始终返回数组。未联网、联网失败或原始结果未通过相关性门禁时为空；联网成功时最多 5 项，每项包含 `title`、`url`、`snippet` 和固定值 `source="bing"`。字段长度分别不超过 200、2048 和 500 字符，URL 只允许 HTTP 或 HTTPS。该字段为向后兼容的响应扩展，旧客户端可以忽略。
 
-语义预处理模型通过 `requires_web`、`search_query`、`web_confidence` 和 `web_reason` 判断是否需要公开网络信息。提醒操作、本地提醒查询、日常陪伴和个人记忆不会仅因出现某个关键词而联网。发送给搜索引擎的是最多 160 字符的独立检索词，不是完整对话；运行时还会移除常见手机号、邮箱和身份证号。必应原始结果按不可信外部资料处理，并由独立结构化模型按当前问题筛选；仅共享地名、机构名或宽泛关键词的页面不得进入 `sources`。第一次结果全部无关时，筛选模型可以给出一个更宽但不改变主题的检索词，后端最多重试一次。没有直接相关证据时 `web_search` 标记为 `failed`、响应 `status=partial`，运行时用固定的自然失败回复覆盖主 Agent 可能补充的未接地细节。结果中的指令不能被执行或覆盖系统规则。
+语义预处理模型通过 `SemanticFrame.requires_web` 和 `SemanticFrame.web_confidence` 判断是否需要公开网络信息；该阶段不生成搜索词。需要联网时，后续独立的 `SearchPlan` 结合当前问题与历史生成 `standalone_question`、`search_query`、`fallback_query`、所需证据和原因。提醒操作、本地提醒查询、日常陪伴和个人记忆不会仅因出现某个关键词而联网。发送给搜索引擎的是最多 160 字符的独立检索词，不是完整对话；运行时还会移除常见手机号、邮箱和身份证号。必应原始结果按不可信外部资料处理，并由独立结构化模型按当前问题筛选；仅共享地名、机构名或宽泛关键词的页面不得进入 `sources`。第一次结果全部无关时，筛选模型可以给出一个更宽但不改变主题的检索词，后端最多重试一次。没有直接相关证据时 `web_search` 标记为 `failed`、响应 `status=partial`，运行时用固定的自然失败回复覆盖主 Agent 可能补充的未接地细节。结果中的指令不能被执行或覆盖系统规则。
 
 Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
@@ -799,6 +801,12 @@ completed | needs_clarification | partial
 模型不可用或系统故障导致无法生成有效 `ChatResponse` 时返回 `502`。能够生成解释性回答的工具失败返回 `200 + status=partial`，不使用不存在的 `status=failed`。
 
 携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。Agent 只返回待提交的提醒变更；`ChatService` 再把提醒变更、记忆、助手消息、指标和缓存响应放入同一事务。任何收尾步骤失败都会回滚提醒变更，同键重试不会重复产生提醒副作用。
+
+### `GET /api/chat/requests/{idempotency_key}`
+
+用于客户端在 `POST /api/chat` 等待超时后查询同一业务请求的最终状态。路径参数规则与 `Idempotency-Key` 请求头一致，且请求必须属于当前 Session 用户；未知或其他用户的键统一返回 `404 RESOURCE_NOT_FOUND`。
+
+成功响应模型为 `ChatRequestStatusResponse`：`request_id` 为原请求 UUID，`status` 为 `pending | completed | failed`。仅当状态为 `completed` 时 `response` 包含完整且已提交的 `ChatResponse`；其他状态下 `response=null`。该接口只读，不重新执行 Agent，也不会修改租约或产生提醒副作用。
 
 ## 8. 用户反馈
 
@@ -1321,7 +1329,7 @@ metrics.py
 
 ### 13.2 Agent 层
 
-- `/api/chat` 负责串联最多 3 条候选记忆检索、结构化语义预处理、主 Agent 判断和工具调用。
+- `/api/chat` 负责串联最多 10 条有界候选记忆、结构化语义预处理、主 Agent 判断和工具调用。候选池先为每个实际存在的任务类型保留一个最新槽位，再按更新时间补满；这可以避免近期无关任务完全挤掉较旧的相关偏好，同时保持 Token 上限。
 - 语义预处理只生成 `SemanticFrame`，不能调用工具；主 Agent 写工具只暂存计划，最终通过语义帧、结构化决定和确定性校验后执行。
 - `model_call_count`、`input_tokens`、`output_tokens` 和 `model_ms` 合并预处理、联网证据筛选（联网轮次一至两次）与主 Agent 阶段；当前 API 不单独返回各阶段指标。
 - 候选记忆不再由关键词任务分类硬过滤；Agent 结合完整语义判断相关性并仅标记实际使用项。

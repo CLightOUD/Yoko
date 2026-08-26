@@ -739,7 +739,14 @@ class LangChainAgent:
                     preferred_time_memory_id=preferred_time_memory_id,
                 )
                 if exact_duplicate is not None:
-                    return None
+                    if semantic_frame.active_operation != "create":
+                        return None
+                    return (
+                        "已去重并保留现有提醒："
+                        f"{exact_duplicate.title}，"
+                        f"{exact_duplicate.next_trigger_at.isoformat()}，"
+                        f"ID={exact_duplicate.id}"
+                    )
                 before = {item.id: item for item in active}
                 request = ReminderCreateRequest(
                     user_id=user_id,

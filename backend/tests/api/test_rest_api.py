@@ -46,6 +46,7 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
         ("get", "/api/account/export"),
         ("delete", "/api/account"),
         ("post", "/api/chat"),
+        ("get", "/api/chat/requests/{idempotency_key}"),
         ("post", "/api/feedback"),
         ("post", "/api/reminders"),
         ("get", "/api/reminders"),

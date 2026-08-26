@@ -24,6 +24,7 @@ from backend.app.schemas.memory import MemoryChange, MemoryScope, TaskType
 
 
 ChatStatus = Literal["completed", "needs_clarification", "partial"]
+ChatRequestState = Literal["pending", "completed", "failed"]
 ToolStatus = Literal["success", "failed"]
 ChatMessage = Annotated[str, StringConstraints(min_length=1, max_length=2000)]
 ImageMediaType = Literal["image/jpeg", "image/png", "image/webp"]
@@ -130,7 +131,7 @@ class ChatResponse(APIModel):
     assistant_message_id: UUID
     status: ChatStatus
     reply: str = Field(min_length=1, max_length=10_000)
-    retrieved_memories: list[RetrievedMemory] = Field(max_length=3)
+    retrieved_memories: list[RetrievedMemory] = Field(max_length=10)
     tool_calls: list[ToolCallView]
     sources: list[WebSource] = Field(default_factory=list, max_length=5)
     memory_changes: list[MemoryChange]
@@ -152,4 +153,18 @@ class ChatResponse(APIModel):
         used_count = sum(memory.used for memory in self.retrieved_memories)
         if self.metrics.used_memory_count != used_count:
             raise ValueError("used_memory_count must match used memory entries")
+        return self
+
+
+class ChatRequestStatusResponse(APIModel):
+    request_id: UUID
+    status: ChatRequestState
+    response: ChatResponse | None = None
+
+    @model_validator(mode="after")
+    def validate_response_state(self) -> ChatRequestStatusResponse:
+        if self.status == "completed" and self.response is None:
+            raise ValueError("completed requests must include a response")
+        if self.status != "completed" and self.response is not None:
+            raise ValueError("only completed requests may include a response")
         return self

@@ -62,6 +62,11 @@ export const FEEDBACK_RATING = {
   DOWN: 'down',
 }
 
+// 仅由浏览器客户端产生，不属于后端 ErrorResponse 契约。
+export const CLIENT_ERROR_CODE = {
+  REQUEST_TIMEOUT: 'REQUEST_TIMEOUT',
+}
+
 // 稳定错误码（见 API_SPEC 3.4）
 export const ERROR_CODE = {
   AUTHENTICATION_REQUIRED: 'AUTHENTICATION_REQUIRED',

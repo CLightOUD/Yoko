@@ -1,4 +1,5 @@
 import {
+  CLIENT_ERROR_CODE,
   DEFAULT_TIMEZONE,
   ERROR_CODE,
   REMINDER_STATUS,
@@ -66,7 +67,7 @@ async function request(path, { method = 'GET', query, body, headers = {}, respon
     clearTimeout(timer)
     if (error.name === 'AbortError') {
       throw new ApiError({
-        code: ERROR_CODE.INTERNAL_ERROR,
+        code: CLIENT_ERROR_CODE.REQUEST_TIMEOUT,
         message: '请求超时，请稍后重试',
         status: 0,
       })
@@ -194,6 +195,10 @@ export function sendChat({
     body,
     headers: idempotency_key ? { 'Idempotency-Key': idempotency_key } : {},
   })
+}
+
+export function getChatRequestStatus(idempotencyKey) {
+  return request(`/api/chat/requests/${encodeURIComponent(idempotencyKey)}`)
 }
 
 // 结构化反馈：点赞/点踩/编辑

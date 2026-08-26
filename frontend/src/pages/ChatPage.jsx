@@ -14,9 +14,15 @@ import {
   Clock,
   ImagePlus,
 } from 'lucide-react'
-import { sendChat, sendFeedback } from '../api/client'
+import {
+  ApiError,
+  getChatRequestStatus,
+  sendChat,
+  sendFeedback,
+} from '../api/client'
 import {
   CHAT_STATUS,
+  CLIENT_ERROR_CODE,
   ERROR_CODE,
   FEEDBACK_RATING,
   MEMORY_ACTION_LABEL,
@@ -36,6 +42,29 @@ import {
 import { validateImageFile, fileToBase64, fileToPreviewUrl } from '../utils/imageUtils.js'
 
 let idCounter = 0
+const CHAT_STATUS_POLL_INTERVAL_MS = 2000
+const CHAT_STATUS_POLL_ATTEMPTS = 45
+
+const delay = (milliseconds) => new Promise((resolve) => {
+  setTimeout(resolve, milliseconds)
+})
+
+async function waitForChatResult(idempotencyKey) {
+  for (let attempt = 0; attempt < CHAT_STATUS_POLL_ATTEMPTS; attempt += 1) {
+    await delay(CHAT_STATUS_POLL_INTERVAL_MS)
+    const result = await getChatRequestStatus(idempotencyKey)
+    if (result.status === 'completed') return result.response
+    if (result.status === 'failed') {
+      throw new ApiError({
+        code: ERROR_CODE.INTERNAL_ERROR,
+        message: '请求最终未能完成，请重试',
+        status: 0,
+      })
+    }
+  }
+  return null
+}
+
 function nextId() {
   idCounter += 1
   return `msg-${Date.now()}-${idCounter}`
@@ -554,19 +583,31 @@ export default function ChatPage() {
     setLoading(true)
 
     try {
-      const res = await sendChat({
-        conversation_id: request.conversationId,
-        message: request.text,
-        timezone,
-        idempotency_key: request.idempotencyKey,
-        image: image
-          ? {
-              media_type: image.mediaType,
-              data: image.base64,
-              detail: 'original',
-            }
-          : null,
-      })
+      let res
+      try {
+        res = await sendChat({
+          conversation_id: request.conversationId,
+          message: request.text,
+          timezone,
+          idempotency_key: request.idempotencyKey,
+          image: image
+            ? {
+                media_type: image.mediaType,
+                data: image.base64,
+                detail: 'original',
+              }
+            : null,
+        })
+      } catch (err) {
+        if (
+          err?.code !== CLIENT_ERROR_CODE.REQUEST_TIMEOUT
+          || !request.idempotencyKey
+        ) {
+          throw err
+        }
+        res = await waitForChatResult(request.idempotencyKey)
+        if (!res) throw err
+      }
       setRetryRequest(null)
       setConversationId(res.conversation_id)
       setMessages((prev) => [
