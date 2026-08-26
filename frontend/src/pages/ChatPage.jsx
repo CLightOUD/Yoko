@@ -247,7 +247,8 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
         </div>
       )}
 
-      {(msg.tools ?? []).length > 0 && (
+      {/* 操作状态行已隐藏，功能不受影响 */}
+      {false && (msg.tools ?? []).length > 0 && (
         <div className="chat-meta">
           <span className="chat-meta-label">操作：</span>
           {msg.tools.map((tool, index) => (
@@ -284,19 +285,7 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
           <span className="pill pill--gray">
             耗时 {formatMs(msg.metrics.total_ms)}
           </span>
-          <span className="pill pill--gray">
-            模型调用 {msg.metrics.model_call_count} 次
-          </span>
-          {msg.metrics.input_tokens != null && msg.metrics.output_tokens != null && (
-            <span className="pill pill--gray">
-              Token {msg.metrics.input_tokens} + {msg.metrics.output_tokens}
-            </span>
-          )}
-          {msg.metrics.memory_tokens > 0 && (
-            <span className="pill pill--gray">
-              记忆 Token {msg.metrics.memory_tokens}
-            </span>
-          )}
+          {/* 记忆 Token 已隐藏 */}
         </div>
       )}
 
