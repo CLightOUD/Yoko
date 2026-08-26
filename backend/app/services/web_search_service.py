@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from threading import Lock
 from time import monotonic, sleep
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -16,6 +18,7 @@ class WebSearchResult:
     title: str
     url: str
     snippet: str
+    content: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,73 @@ class _BingResultsParser(HTMLParser):
         self._paragraph_depth = 0
 
 
+class _ReadableTextParser(HTMLParser):
+    _SKIPPED_TAGS = frozenset(
+        {"script", "style", "noscript", "svg", "template", "canvas"}
+    )
+    _BLOCK_TAGS = frozenset(
+        {
+            "article",
+            "blockquote",
+            "br",
+            "dd",
+            "div",
+            "dt",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "main",
+            "p",
+            "section",
+            "table",
+            "td",
+            "th",
+            "tr",
+        }
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        del attrs
+        if tag in self._SKIPPED_TAGS:
+            self._skip_depth += 1
+        elif self._skip_depth == 0 and tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIPPED_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+        elif self._skip_depth == 0 and tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        text = _collapse_whitespace(data)
+        if text:
+            self._parts.append(text)
+
+    def text(self) -> str:
+        lines = []
+        for value in " ".join(self._parts).splitlines():
+            line = _collapse_whitespace(value)
+            if line and (not lines or line != lines[-1]):
+                lines.append(line)
+        return "\n".join(lines)
+
+
 class WebSearchService:
     SEARCH_URL = "https://www.bing.com/search"
     USER_AGENT = (
@@ -137,6 +207,7 @@ class WebSearchService:
         self._cache_ttl_seconds = max(0, cache_ttl_seconds)
         self._minimum_interval_seconds = max(0, minimum_interval_seconds)
         self._cache: dict[str, tuple[float, tuple[WebSearchResult, ...]]] = {}
+        self._page_cache: dict[str, tuple[float, str]] = {}
         self._lock = Lock()
         self._last_request_started = 0.0
 
@@ -231,6 +302,133 @@ class WebSearchService:
                 timeout=5,
             )
 
+    def fetch_pages(
+        self,
+        results: tuple[WebSearchResult, ...],
+        *,
+        max_pages: int = 2,
+    ) -> tuple[WebSearchResult, ...]:
+        limit = min(max(0, max_pages), 3)
+        enriched: list[WebSearchResult] = []
+        for index, result in enumerate(results):
+            content = self._fetch_page(result.url) if index < limit else ""
+            enriched.append(
+                WebSearchResult(
+                    title=result.title,
+                    url=result.url,
+                    snippet=result.snippet,
+                    content=content,
+                )
+            )
+        return tuple(enriched)
+
+    def _fetch_page(self, url: str) -> str:
+        cached = self._get_cached_page(url)
+        if cached is not None:
+            return cached
+        current_url = url
+        try:
+            for _ in range(4):
+                if not self._is_safe_page_url(current_url):
+                    return ""
+                response = self._page_request(current_url)
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "").strip()
+                    if not location:
+                        return ""
+                    current_url = urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type and not any(
+                    allowed in content_type
+                    for allowed in (
+                        "text/html",
+                        "application/xhtml+xml",
+                        "text/plain",
+                        "application/json",
+                    )
+                ):
+                    return ""
+                raw = response.content
+                if len(raw) > 512 * 1024:
+                    return ""
+                text = _decode_page(raw, content_type)
+                if "html" in content_type or "<html" in text[:500].casefold():
+                    parser = _ReadableTextParser()
+                    parser.feed(text)
+                    parser.close()
+                    text = parser.text()
+                else:
+                    text = _collapse_whitespace(text)
+                content = text[:8_000]
+                if content:
+                    with self._lock:
+                        self._page_cache[url] = (monotonic(), content)
+                return content
+            return ""
+        except (httpx.HTTPError, UnicodeError, ValueError):
+            return ""
+
+    def _page_request(self, url: str) -> httpx.Response:
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,text/plain,application/json",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+        }
+        if self._client is not None:
+            return self._client.get(
+                url,
+                headers=headers,
+                timeout=5,
+                follow_redirects=False,
+            )
+        with httpx.Client(follow_redirects=False) as client:
+            return client.get(url, headers=headers, timeout=5)
+
+    def _is_safe_page_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                return False
+            addresses = []
+            literal_address = False
+            try:
+                addresses.append(ipaddress.ip_address(parsed.hostname))
+                literal_address = True
+            except ValueError:
+                if self._client is not None:
+                    return True
+                addresses.extend(
+                    ipaddress.ip_address(item[4][0])
+                    for item in socket.getaddrinfo(
+                        parsed.hostname,
+                        parsed.port or (443 if parsed.scheme == "https" else 80),
+                        type=socket.SOCK_STREAM,
+                    )
+                )
+            return bool(addresses) and all(
+                _is_public_address(item)
+                or (
+                    not literal_address
+                    and _is_proxy_fake_address(item)
+                )
+                for item in addresses
+            )
+        except (OSError, ValueError):
+            return False
+
+    def _get_cached_page(self, url: str) -> str | None:
+        with self._lock:
+            entry = self._page_cache.get(url)
+            if entry is None:
+                return None
+            cached_at, content = entry
+            if monotonic() - cached_at > self._cache_ttl_seconds:
+                self._page_cache.pop(url, None)
+                return None
+            return content
+
     def _get_cached(
         self,
         cache_key: str,
@@ -259,6 +457,41 @@ class WebSearchService:
 
 def _collapse_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _decode_page(raw: bytes, content_type: str) -> str:
+    charset_match = re.search(r"charset=([\w-]+)", content_type)
+    candidates = [charset_match.group(1)] if charset_match else []
+    head = raw[:2_048].decode("ascii", errors="ignore")
+    meta_match = re.search(r"charset=[\"']?([\w-]+)", head, re.IGNORECASE)
+    if meta_match:
+        candidates.append(meta_match.group(1))
+    candidates.extend(["utf-8", "gb18030"])
+    for encoding in dict.fromkeys(candidates):
+        try:
+            return raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _is_proxy_fake_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    return isinstance(address, ipaddress.IPv4Address) and address in ipaddress.ip_network(
+        "198.18.0.0/15"
+    )
 
 
 def _sanitize_query(value: str) -> str:

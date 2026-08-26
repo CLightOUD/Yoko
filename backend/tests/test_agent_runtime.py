@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from backend.app.agent import LangChainAgent
 from backend.app.agent.runtime import (
     MutationSafetyMiddleware,
+    SearchPlan,
+    SearchPlanResult,
     SemanticFrame,
     SemanticPreprocessResult,
     WebEvidenceDecision,
@@ -26,6 +28,7 @@ from backend.app.services.web_search_service import (
 
 
 ORIGINAL_PREPROCESS_SEMANTICS = LangChainAgent._preprocess_semantics
+ORIGINAL_PLAN_WEB_SEARCH = LangChainAgent._plan_web_search
 ORIGINAL_SELECT_WEB_EVIDENCE = LangChainAgent._select_web_evidence
 
 
@@ -55,6 +58,30 @@ def stub_semantic_preprocessor(monkeypatch) -> None:
         LangChainAgent,
         "_preprocess_semantics",
         staticmethod(preprocess),
+    )
+    monkeypatch.setattr(
+        LangChainAgent,
+        "_plan_web_search",
+        staticmethod(
+            lambda **kwargs: SearchPlanResult(
+                plan=SearchPlan(
+                    standalone_question=next(
+                        item["content"]
+                        for item in reversed(kwargs["history"])
+                        if item["role"] == "user"
+                    ),
+                    search_query=next(
+                        item["content"]
+                        for item in reversed(kwargs["history"])
+                        if item["role"] == "user"
+                    ),
+                    confidence=1,
+                    reason="测试沿用预处理草案",
+                ),
+                model_messages=[],
+                model_ms=0,
+            )
+        ),
     )
 
 
@@ -129,8 +156,58 @@ def test_semantic_preprocessor_returns_structured_frame_and_usage() -> None:
     assert "requires_web" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["recent_history"][0]["vision_observation"]["medical_content"]
-    assert "不要包含姓名、手机号" in calls[0][0].content
+    assert "不生成搜索词" in calls[0][0].content
     assert '"label": "U1"' in calls[0][1].content
+
+
+def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
+    raw = AIMessage(
+        content="",
+        usage_metadata={
+            "input_tokens": 60,
+            "output_tokens": 20,
+            "total_tokens": 80,
+        },
+    )
+    plan = SearchPlan(
+        standalone_question="乙机构2026年的申请条件是什么",
+        search_query="乙机构 2026 申请条件 官方",
+        required_evidence=["适用对象", "申请条件", "有效时间"],
+        freshness_required=True,
+        preferred_source_types=["机构官网"],
+        confidence=0.97,
+        reason="当前消息只替换机构，继承年份和主题",
+    )
+    calls = []
+
+    class StructuredModel:
+        def invoke(self, messages):
+            calls.append(messages)
+            return {"raw": raw, "parsed": plan, "parsing_error": None}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            assert schema is SearchPlan
+            assert kwargs == {"method": "function_calling", "include_raw": True}
+            return StructuredModel()
+
+    result = ORIGINAL_PLAN_WEB_SEARCH(
+        model=FakeModel(),
+        now=datetime(2026, 8, 26, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        timezone="Asia/Shanghai",
+        history=[
+            {"role": "user", "content": "查甲机构今年的申请条件"},
+            {"role": "assistant", "content": "暂时没有找到。"},
+            {"role": "user", "content": "乙机构呢"},
+        ],
+    )
+
+    assert result.plan == plan
+    assert result.model_messages == [raw]
+    assert "只替换地点、对象、机构、时间" in calls[0][0].content
+    payload = json.loads(calls[0][1].content)
+    assert payload["recent_history"][-1]["content"] == "乙机构呢"
+    assert "draft" not in payload
 
 
 def test_vision_context_marks_image_text_as_observation_data() -> None:
@@ -158,12 +235,13 @@ def test_vision_context_marks_image_text_as_observation_data() -> None:
 
 def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> None:
     queries = []
+    fetched_urls = []
 
     class FakeSearchService:
         def search(self, query, *, max_results):
             queries.append(query)
             assert max_results == 5
-            if query == "北京最新养老补贴政策":
+            if query == "北京 最新 养老补贴 政策":
                 return WebSearchResponse(
                     query=query,
                     results=(
@@ -184,6 +262,23 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                         snippet="政策页面于2026年更新。",
                     ),
                 ),
+            )
+
+        def fetch_pages(self, results, *, max_pages):
+            assert max_pages == 2
+            fetched_urls.extend(item.url for item in results[:max_pages])
+            return tuple(
+                WebSearchResult(
+                    title=item.title,
+                    url=item.url,
+                    snippet=item.snippet,
+                    content=(
+                        "政策适用对象为80岁以上居民，2026年继续有效。"
+                        if "policy" in item.url
+                        else "北京景点与交通介绍。"
+                    ),
+                )
+                for item in results
             )
 
     class SearchGraph:
@@ -217,9 +312,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                 normalized_text="查询北京最新养老补贴政策",
                 intent="web_search",
                 requires_web=True,
-                search_query="北京最新养老补贴政策",
                 web_confidence=0.96,
-                web_reason="需要当前公开政策",
                 confidence=0.96,
             ),
             model_messages=[],
@@ -227,7 +320,9 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
         )
 
     def select_web_evidence(**kwargs):
-        assert kwargs["question"] == "查询北京最新养老补贴政策"
+        assert kwargs["question"] == "北京最新养老补贴政策是什么"
+        assert kwargs["required_evidence"] == ["适用对象", "有效时间"]
+        assert kwargs["results"][0].content
         relevant = kwargs["query"] == "北京 高龄津贴 政策"
         return WebEvidenceSelectionResult(
             decision=WebEvidenceDecision(
@@ -251,6 +346,29 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
             model_ms=7,
         )
 
+    def plan_web_search(**kwargs):
+        return SearchPlanResult(
+            plan=SearchPlan(
+                standalone_question="北京最新养老补贴政策是什么",
+                search_query="北京 最新 养老补贴 政策",
+                fallback_query="北京 高龄津贴 政策",
+                required_evidence=["适用对象", "有效时间"],
+                confidence=0.96,
+                reason="准备精确查询和高召回备选查询",
+            ),
+            model_messages=[
+                AIMessage(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 20,
+                        "output_tokens": 5,
+                        "total_tokens": 25,
+                    },
+                )
+            ],
+            model_ms=5,
+        )
+
     captured = {}
 
     def create_search_agent(**kwargs):
@@ -269,6 +387,11 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
         LangChainAgent,
         "_select_web_evidence",
         staticmethod(select_web_evidence),
+    )
+    monkeypatch.setattr(
+        LangChainAgent,
+        "_plan_web_search",
+        staticmethod(plan_web_search),
     )
     monkeypatch.setattr(
         "backend.app.agent.runtime.create_agent",
@@ -290,7 +413,10 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert [call.tool_name for call in result.tool_calls] == ["web_search"]
     assert result.tool_calls[0].status == "success"
     assert "尝试 2 次" in result.tool_calls[0].summary
-    assert queries == ["北京最新养老补贴政策", "北京 高龄津贴 政策"]
+    assert queries == ["北京 最新 养老补贴 政策", "北京 高龄津贴 政策"]
+    assert fetched_urls == [
+        "https://example.gov.cn/policy",
+    ]
     assert result.sources[0].title == "北京市养老服务政策"
     assert "https://example.gov.cn/policy" in result.reply
     assert "13800138000" not in result.reply
@@ -299,7 +425,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert "对话原文会按系统的数据管理规则保存" in result.reply
     assert "不可信外部资料" in captured["system_prompt"]
     assert "不得在回复中复述" in captured["system_prompt"]
-    assert "政策页面于2026年更新" in captured["system_prompt"]
+    assert "政策适用对象为80岁以上居民" in captured["system_prompt"]
     assert result.model_call_count == 3
     assert result.input_tokens == 80
     assert result.output_tokens == 20
@@ -342,7 +468,6 @@ def test_web_search_failure_returns_partial_without_fabricated_sources(
                     normalized_text="查询最新政策",
                     intent="web_search",
                     requires_web=True,
-                    search_query="最新养老政策",
                     web_confidence=0.9,
                     confidence=0.9,
                 ),
@@ -414,12 +539,14 @@ def test_web_evidence_selector_filters_unrelated_results() -> None:
             title="北京市高龄津贴政策",
             url="https://example.gov.cn/allowance",
             snippet="介绍高龄津贴对象和申请方式。",
+            content="政策适用对象为80岁以上居民，申请时需要提交身份证明。",
         ),
     )
     selected = ORIGINAL_SELECT_WEB_EVIDENCE(
         model=FakeModel(),
         question="北京高龄津贴怎么领",
         query="北京 高龄津贴 site:gov.cn",
+        required_evidence=["适用对象", "申请材料"],
         results=results,
     )
 
@@ -427,6 +554,9 @@ def test_web_evidence_selector_filters_unrelated_results() -> None:
     assert selected.model_messages == [raw]
     assert isinstance(calls[0][0], SystemMessage)
     assert "仅仅共享地名" in calls[0][0].content
+    payload = json.loads(calls[0][1].content)
+    assert payload["required_evidence"] == ["适用对象", "申请材料"]
+    assert payload["results"][1]["content"].startswith("政策适用对象")
     assert calls[0][1].content.count('"index"') == 2
 
 
@@ -474,6 +604,53 @@ def test_web_evidence_selector_rejects_unanswerable_or_low_confidence() -> None:
             results=results,
         )
         assert selected.results == ()
+
+
+def test_search_prefilter_drops_candidates_that_only_share_one_broad_term() -> None:
+    results = (
+        WebSearchResult(
+            title="甲地旅游攻略",
+            url="https://example.com/travel",
+            snippet="介绍甲地景点。",
+        ),
+        WebSearchResult(
+            title="甲地养老补贴政策",
+            url="https://example.gov.cn/policy",
+            snippet="介绍补贴对象和标准。",
+        ),
+    )
+
+    selected = LangChainAgent._prefilter_search_results(
+        query="甲地 养老 补贴",
+        results=results,
+    )
+
+    assert selected == (results[1],)
+    assert LangChainAgent._prefilter_search_results(
+        query="甲地 医疗 报销",
+        results=(results[0],),
+    ) == ()
+
+
+def test_web_content_compaction_keeps_relevant_numeric_evidence() -> None:
+    content = (
+        "无关导航和站点介绍。" * 120
+        + "养老补贴政策正文：适用对象为80岁以上居民，每月标准为300元，"
+        + "有效期至2026年12月31日。"
+        + "其他无关内容。" * 120
+    )
+
+    compacted = LangChainAgent._compact_web_content(
+        content=content,
+        query="养老 补贴 政策",
+        required_evidence=["适用对象", "补贴金额", "有效日期"],
+        max_chars=1_500,
+    )
+
+    assert len(compacted) <= 1_500
+    assert "80岁以上居民" in compacted
+    assert "300元" in compacted
+    assert "2026年12月31日" in compacted
 
 
 @pytest.mark.parametrize("failure_mode", ["invoke", "parse"])
