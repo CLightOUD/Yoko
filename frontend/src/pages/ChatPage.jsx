@@ -12,6 +12,7 @@ import {
   Trash2,
   ExternalLink,
   Clock,
+  ImagePlus,
 } from 'lucide-react'
 import { sendChat, sendFeedback } from '../api/client'
 import {
@@ -31,6 +32,7 @@ import {
   loadChatHistory,
   saveChatHistory,
 } from '../chatStorage.js'
+import { validateImageFile, fileToBase64, fileToPreviewUrl } from '../utils/imageUtils.js'
 
 let idCounter = 0
 function nextId() {
@@ -473,10 +475,14 @@ export default function ChatPage() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [highlightId, setHighlightId] = useState(null)
   const [rateCountdown, setRateCountdown] = useState(null)
+  const [selectedImage, setSelectedImage] = useState(null)
+  const [imagePreviewUrl, setImagePreviewUrl] = useState(null)
+  const [imageError, setImageError] = useState(null)
 
   const listEndRef = useRef(null)
   const abortRef = useRef(null)
   const rateTimerRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   // 惰性恢复上次会话
   useEffect(() => {
@@ -510,12 +516,20 @@ export default function ChatPage() {
     return () => clearTimeout(rateTimerRef.current)
   }, [rateCountdown])
 
-  const submitChat = useCallback(async (request, { appendUser }) => {
+  const submitChat = useCallback(async (request, { appendUser, image }) => {
     setError(null)
+    setImageError(null)
     if (appendUser) {
       setMessages((prev) => [
         ...prev.slice(-MAX_CHAT_HISTORY + 1),
-        { id: nextId(), role: 'user', text: request.text, time: Date.now() },
+        {
+          id: nextId(),
+          role: 'user',
+          text: request.text,
+          time: Date.now(),
+          imagePreviewUrl: image?.previewUrl ?? null,
+          imageFileName: image?.fileName ?? null,
+        },
       ])
     }
     setLoading(true)
@@ -526,6 +540,13 @@ export default function ChatPage() {
         message: request.text,
         timezone,
         idempotency_key: request.idempotencyKey,
+        image: image
+          ? {
+              media_type: image.mediaType,
+              data: image.base64,
+              detail: 'original',
+            }
+          : null,
       })
       setRetryRequest(null)
       setConversationId(res.conversation_id)
@@ -546,11 +567,16 @@ export default function ChatPage() {
           feedback: {},
         },
       ])
+      // 发送成功后清空图片
+      setSelectedImage(null)
+      setImagePreviewUrl(null)
+      if (image?.previewUrl) {
+        URL.revokeObjectURL(image.previewUrl)
+      }
     } catch (err) {
       const errInfo = getErrorDisplay(err)
       setError(errInfo)
       setRetryRequest(request)
-      // 429 时启动倒计时
       if (err?.status === 429 && err?.retryAfter != null) {
         setRateCountdown(err.retryAfter)
       }
@@ -560,31 +586,85 @@ export default function ChatPage() {
     }
   }, [timezone])
 
-  function handleSend() {
+  async function handleSend() {
     const text = input.trim()
-    if (!text || loading) return
+    const hasImage = selectedImage != null
+    if ((!text && !hasImage) || loading) return
     if (rateCountdown != null && rateCountdown > 0) return
+
+    // 先进行 Base64 转换（可能耗时），转换期间禁用输入
+    let imageInfo = null
+    if (hasImage) {
+      try {
+        const base64 = await fileToBase64(selectedImage)
+        imageInfo = {
+          mediaType: selectedImage.type,
+          base64,
+          previewUrl: imagePreviewUrl,
+          fileName: selectedImage.name,
+        }
+      } catch {
+        setImageError('图片编码失败，请重试')
+        return
+      }
+    }
 
     const request = {
       text,
       conversationId,
       idempotencyKey: crypto.randomUUID(),
+      imageInfo,
     }
     setInput('')
     setRetryRequest(null)
     setError(null)
-    submitChat(request, { appendUser: true })
+    setImageError(null)
+
+    submitChat(request, { appendUser: true, image: imageInfo })
   }
 
   function handleRetry() {
     if (!retryRequest || loading) return
-    submitChat(retryRequest, { appendUser: false })
+    // 重试时不需要重新转 Base64——图片已在 handleSend 时转换
+    const imageInfo = retryRequest.imageInfo ?? null
+    submitChat(retryRequest, { appendUser: false, image: imageInfo })
   }
 
   function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       handleSend()
+    }
+  }
+
+  function handleImageSelect(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    const result = validateImageFile(file)
+    if (!result.valid) {
+      setImageError(result.error)
+      return
+    }
+
+    setImageError(null)
+    fileToPreviewUrl(file).then((url) => {
+      setSelectedImage(file)
+      setImagePreviewUrl(url)
+    }).catch(() => {
+      setImageError('图片预览加载失败')
+    })
+  }
+
+  function handleRemoveImage() {
+    if (imagePreviewUrl) {
+      URL.revokeObjectURL(imagePreviewUrl)
+    }
+    setSelectedImage(null)
+    setImagePreviewUrl(null)
+    setImageError(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
     }
   }
 
@@ -690,6 +770,18 @@ export default function ChatPage() {
               id={`anchor-${msg.id}`}
               className="chat-bubble chat-bubble--user"
             >
+              {msg.imagePreviewUrl && (
+                <div className="chat-image-preview">
+                  <img
+                    src={msg.imagePreviewUrl}
+                    alt={msg.imageFileName || '图片'}
+                    className="chat-image-preview__img"
+                  />
+                  {msg.imageFileName && (
+                    <span className="chat-image-preview__name">{msg.imageFileName}</span>
+                  )}
+                </div>
+              )}
               {msg.text}
             </div>
           ) : (
@@ -749,7 +841,58 @@ export default function ChatPage() {
         </div>
       )}
 
+      {imageError && (
+        <div className="error-banner" role="alert">
+          {imageError}
+        </div>
+      )}
+
+      {imagePreviewUrl && selectedImage && (
+        <div className="composer-image-preview">
+          <img
+            src={imagePreviewUrl}
+            alt={selectedImage.name}
+            className="composer-image-preview__img"
+          />
+          <div className="composer-image-preview__info">
+            <span className="composer-image-preview__name">{selectedImage.name}</span>
+            <span className="composer-image-preview__size">
+              {(selectedImage.size / 1024).toFixed(0)} KiB
+            </span>
+          </div>
+          <button
+            type="button"
+            className="icon-btn composer-image-preview__remove"
+            onClick={handleRemoveImage}
+            aria-label="移除图片"
+            disabled={loading}
+          >
+            <X aria-hidden="true" size={18} />
+          </button>
+        </div>
+      )}
+
       <div className="composer">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          capture="environment"
+          onChange={handleImageSelect}
+          className="composer__file-input"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          className="icon-btn composer__image-btn"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={loading || (rateCountdown != null && rateCountdown > 0)}
+          title="添加图片"
+          aria-label="添加图片"
+        >
+          <ImagePlus aria-hidden="true" size={22} />
+        </button>
         <textarea
           rows={1}
           value={input}
@@ -763,7 +906,7 @@ export default function ChatPage() {
           className="btn"
           type="button"
           onClick={handleSend}
-          disabled={loading || !input.trim() || (rateCountdown != null && rateCountdown > 0)}
+          disabled={loading || (!input.trim() && !selectedImage) || (rateCountdown != null && rateCountdown > 0)}
         >
           <Send aria-hidden="true" />
           {loading ? '发送中…' : '发送'}

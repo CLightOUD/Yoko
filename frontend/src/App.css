@@ -1048,3 +1048,102 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* =====================================================
+   图片上传与预览
+   ===================================================== */
+
+/* 隐藏文件输入 */
+.composer__file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 图片选择按钮 */
+.composer__image-btn {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  border: 2px dashed var(--color-border);
+}
+
+.composer__image-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+/* 发送前图片预览（composer 上方） */
+.composer-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.composer-image-preview__img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.composer-image-preview__info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.composer-image-preview__name {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-image-preview__size {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.composer-image-preview__remove {
+  flex-shrink: 0;
+}
+
+/* 聊天气泡中的图片预览 */
+.chat-image-preview {
+  margin-bottom: 8px;
+}
+
+.chat-image-preview__img {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  display: block;
+}
+
+.chat-image-preview__name {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}

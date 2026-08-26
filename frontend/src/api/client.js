@@ -175,14 +175,23 @@ export function sendChat({
   message,
   timezone = null,
   idempotency_key = null,
+  image = null,
 }) {
+  const body = {
+    conversation_id,
+    message,
+    timezone,
+  }
+  if (image) {
+    body.image = {
+      media_type: image.media_type,
+      data: image.data,
+      detail: image.detail ?? 'original',
+    }
+  }
   return request('/api/chat', {
     method: 'POST',
-    body: {
-      conversation_id,
-      message,
-      timezone,
-    },
+    body,
     headers: idempotency_key ? { 'Idempotency-Key': idempotency_key } : {},
   })
 }
