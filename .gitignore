@@ -21,6 +21,7 @@ backend/backups/
 # Node
 frontend/node_modules/
 frontend/dist/
+/.vite-cache/
 
 # Editor and OS
 .vscode/
