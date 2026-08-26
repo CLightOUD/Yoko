@@ -478,6 +478,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert "尝试 2 次" in result.tool_calls[0].summary
     assert queries == ["北京 最新 养老补贴 政策", "北京 高龄津贴 政策"]
     assert fetched_urls == [
+        "https://example.com/travel",
         "https://example.gov.cn/policy",
     ]
     assert result.sources[0].title == "北京市养老服务政策"
@@ -489,9 +490,9 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert "不可信外部资料" in captured["system_prompt"]
     assert "不得在回复中复述" in captured["system_prompt"]
     assert "政策适用对象为80岁以上居民" in captured["system_prompt"]
-    assert result.model_call_count == 3
-    assert result.input_tokens == 80
-    assert result.output_tokens == 20
+    assert result.model_call_count == 4
+    assert result.input_tokens == 100
+    assert result.output_tokens == 25
     assert ReminderService(database).list(
         ReminderListQuery(user_id="demo-user")
     ).total == 0
@@ -617,6 +618,8 @@ def test_web_evidence_selector_filters_unrelated_results() -> None:
     assert selected.model_messages == [raw]
     assert isinstance(calls[0][0], SystemMessage)
     assert "仅仅共享地名" in calls[0][0].content
+    assert "动态网页无法提取有效正文" in calls[0][0].content
+    assert "confidence 不得高于0.8" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["required_evidence"] == ["适用对象", "申请材料"]
     assert payload["results"][1]["content"].startswith("政策适用对象")
@@ -669,7 +672,7 @@ def test_web_evidence_selector_rejects_unanswerable_or_low_confidence() -> None:
         assert selected.results == ()
 
 
-def test_search_prefilter_drops_candidates_that_only_share_one_broad_term() -> None:
+def test_search_prefilter_ranks_strong_matches_without_dropping_low_overlap() -> None:
     results = (
         WebSearchResult(
             title="甲地旅游攻略",
@@ -689,10 +692,26 @@ def test_search_prefilter_drops_candidates_that_only_share_one_broad_term() -> N
     )
 
     assert selected == (results[1],)
-    assert LangChainAgent._prefilter_search_results(
+    low_overlap = LangChainAgent._prefilter_search_results(
         query="甲地 医疗 报销",
         results=(results[0],),
-    ) == ()
+    )
+    assert low_overlap == (results[0],)
+
+
+def test_search_prefilter_preserves_semantic_chinese_variants() -> None:
+    result = WebSearchResult(
+        title="《原神》版本更新说明",
+        url="https://example.com/game-update",
+        snippet="查看游戏版本更新与维护公告。",
+    )
+
+    selected = LangChainAgent._prefilter_search_results(
+        query="原神 当前最新版本 官方信息",
+        results=(result,),
+    )
+
+    assert selected == (result,)
 
 
 def test_web_content_compaction_keeps_relevant_numeric_evidence() -> None:
