@@ -271,7 +271,10 @@ class WebSearchService:
         parser = _BingResultsParser()
         parser.feed(html)
         parser.close()
-        results = tuple(_deduplicate(parser.results)[:limit])
+        # Cache the complete upstream result window. A caller that initially asks
+        # for one item must not permanently truncate later requests for the same
+        # query while the cache entry is still fresh.
+        results = tuple(_deduplicate(parser.results)[:5])
         if not results:
             return WebSearchResponse(
                 query=safe_query,
@@ -283,7 +286,7 @@ class WebSearchService:
             self._cache.move_to_end(cache_key)
             while len(self._cache) > self._search_cache_max_entries:
                 self._cache.popitem(last=False)
-        return WebSearchResponse(query=safe_query, results=results)
+        return WebSearchResponse(query=safe_query, results=results[:limit])
 
     def _request(self, query: str) -> httpx.Response:
         parameters = {

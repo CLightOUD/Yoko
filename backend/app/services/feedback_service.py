@@ -55,7 +55,7 @@ class FeedbackService:
                 request_id=str(request.request_id),
                 connection=connection,
             )
-            if not request_messages:
+            if not any(message["role"] == "assistant" for message in request_messages):
                 raise ResourceNotFoundError("请求不存在")
 
             existing = self.feedbacks.get_by_dedup_key(

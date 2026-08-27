@@ -60,6 +60,41 @@ def test_bing_search_parses_deduplicates_and_caches_results() -> None:
     assert len(second.results) == 1
 
 
+def test_search_cache_can_expand_after_an_initial_smaller_result_limit() -> None:
+    calls = 0
+    html = """
+    <li class="b_algo"><h2><a href="https://example.com/one">第一条</a></h2>
+    <p>摘要一</p></li>
+    <li class="b_algo"><h2><a href="https://example.com/two">第二条</a></h2>
+    <p>摘要二</p></li>
+    <li class="b_algo"><h2><a href="https://example.com/three">第三条</a></h2>
+    <p>摘要三</p></li>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text=html, request=request)
+
+    service = WebSearchService(
+        client=_client(handler),
+        cache_ttl_seconds=60,
+        minimum_interval_seconds=0,
+    )
+
+    first = service.search("同一检索词", max_results=1)
+    expanded = service.search("同一检索词", max_results=3)
+
+    assert calls == 1
+    assert len(first.results) == 1
+    assert expanded.cached is True
+    assert [item.title for item in expanded.results] == [
+        "第一条",
+        "第二条",
+        "第三条",
+    ]
+
+
 def test_search_cache_evicts_least_recently_used_entry() -> None:
     calls: list[str] = []
 

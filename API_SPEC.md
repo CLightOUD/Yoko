@@ -829,7 +829,7 @@ completed | needs_clarification | partial
 
 | 字段 | 类型 | 必填 | 默认值 | 规则 |
 | --- | --- | --- | --- | --- |
-| `request_id` | UUID 字符串 | 是 | 无 | 必须对应同一用户的一次 `/api/chat` 请求 |
+| `request_id` | UUID 字符串 | 是 | 无 | 必须对应同一用户一次已生成 Agent 回复的 `/api/chat` 请求；失败且没有回复的请求不可反馈 |
 | `feedback_text` | 字符串或 `null` | 否 | `null` | 非空时去除首尾空格，最长 2000 |
 | `corrected_reply` | 字符串或 `null` | 否 | `null` | 用户修正后的结果，最长 4000 |
 | `rating` | 枚举字符串或 `null` | 否 | `null` | `up` 或 `down` |

@@ -395,6 +395,50 @@ def test_preprocess_failure_returns_safe_502_without_side_effects_and_can_retry(
     assert recovered_user_messages == 1
 
 
+def test_feedback_rejects_a_failed_chat_without_an_agent_response(
+    client,
+    monkeypatch,
+) -> None:
+    def fail_agent(**kwargs):
+        del kwargs
+        raise RuntimeError("simulated agent failure")
+
+    monkeypatch.setattr(client.app.state.test_agent, "run", fail_agent)
+    key = "chat-feedback-failed-0001"
+    failed = client.post(
+        "/api/chat",
+        json={"message": "这次请求会失败"},
+        headers={"Idempotency-Key": key},
+    )
+    with client.app.state.database.connection() as connection:
+        request_id = connection.execute(
+            "SELECT id FROM chat_requests WHERE idempotency_key = ?",
+            (key,),
+        ).fetchone()["id"]
+
+    feedback = client.post(
+        "/api/feedback",
+        json={
+            "request_id": request_id,
+            "feedback_text": "以后都请简短一点",
+            "rating": "down",
+        },
+    )
+
+    assert failed.status_code == 500
+    assert feedback.status_code == 404
+    with client.app.state.database.connection() as connection:
+        feedback_count = connection.execute(
+            "SELECT COUNT(*) FROM feedbacks"
+        ).fetchone()[0]
+        memory_count = connection.execute(
+            "SELECT COUNT(*) FROM memories"
+        ).fetchone()[0]
+
+    assert feedback_count == 0
+    assert memory_count == 0
+
+
 def test_chat_finalization_rolls_back_and_can_retry(client, monkeypatch) -> None:
     metrics_service = client.app.state.metrics_service
     original_record = metrics_service.record
