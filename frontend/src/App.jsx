@@ -87,7 +87,10 @@ function SessionErrorScreen({ message, onRetry }) {
 // 已登录后的主界面
 function MainApp() {
   const { user, logout } = useAuth()
-  const [tab, setTab] = useState('chat')
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab')
+    return TABS.some((item) => item.key === requested) ? requested : 'chat'
+  })
   const [health, setHealth] = useState('checking')
   const [loggingOut, setLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState('')

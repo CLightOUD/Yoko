@@ -4,6 +4,7 @@ import { acknowledgeReminder, listDueReminders } from './api/client'
 import { REPEAT_TYPE_LABEL } from './api/constants'
 import { formatFullDateTime } from './api/format'
 import { playAlarm, unlockAudio } from './alarm'
+import { ensurePushSubscription } from './pushNotifications'
 
 // 到期提醒轮询周期（规范建议 20–30 秒）
 const POLL_MS = 25000
@@ -96,6 +97,10 @@ export default function ReminderAlarm() {
       unlockAudio()
       // 首次交互时顺便请求通知权限（浏览器要求必须在用户手势内）
       ensureNotificationPermission()
+        .then((permission) => (
+          permission === 'granted' ? ensurePushSubscription() : false
+        ))
+        .catch(() => false)
     }
     window.addEventListener('pointerdown', unlock, { once: true })
     window.addEventListener('keydown', unlock, { once: true })

@@ -171,7 +171,14 @@ class MutationSafetyMiddleware(AgentMiddleware):
         {"create_reminder", "update_reminder", "delete_reminder"}
     )
 
+    def __init__(self, *, max_model_calls: int = 6) -> None:
+        self.max_model_calls = max_model_calls
+        self.model_call_count = 0
+
     def wrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
+        self.model_call_count += 1
+        if self.model_call_count > self.max_model_calls:
+            raise ModelUnavailableError("单次请求的模型调用次数超过安全上限")
         response = handler(request)
         mutating_calls = [
             tool_call
@@ -1796,9 +1803,17 @@ class LangChainAgent:
             return next_trigger_at
         if repeat_type == "none" or trigger > now.astimezone(trigger.tzinfo):
             return next_trigger_at
-        step = timedelta(days=1 if repeat_type == "daily" else 7)
+        step_days = 1 if repeat_type == "daily" else 7
+        zone_key = getattr(now.tzinfo, "key", None)
         while trigger <= now.astimezone(trigger.tzinfo):
-            trigger += step
+            if zone_key:
+                trigger = ReminderService._next_local_occurrence(
+                    trigger,
+                    timezone=zone_key,
+                    days=step_days,
+                )
+            else:
+                trigger += timedelta(days=step_days)
         return trigger.isoformat()
 
     @staticmethod

@@ -38,8 +38,8 @@ memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
 the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
 credentials; the other endpoints can run without an LLM key.
 
-Account authentication is active in API contract version `0.5.0`. Registration
-and login issue a fixed 180-day HttpOnly session cookie backed by the V3 SQLite
+Account authentication is active in API contract version `0.6.0`. Registration
+and login issue a fixed 180-day HttpOnly session cookie backed by the V5 SQLite
 schema. Chat, feedback, reminder, memory, and metrics endpoints require that
 session and derive ownership on the server; a client-supplied `user_id` is
 ignored during the temporary frontend transition. State-changing requests also
@@ -47,8 +47,9 @@ require the configured frontend origin or the API's own origin.
 
 `GET /api/health` is the process liveness check and `GET /api/ready` verifies
 the database, migration version, and local model-client configuration without
-sending a model request. Chat clients may send an `Idempotency-Key`
-header and must reuse it when retrying the same request.
+sending a model request. Chat clients must send an `Idempotency-Key` header and
+must reuse it when retrying the same request. Active executions renew their
+lease, and stale attempts cannot commit over a newer retry.
 
 Each chat turn first runs a structured semantic-preprocessing model call and
 then the main Agent. The resulting `SemanticFrame` marks the final operation,
@@ -184,14 +185,15 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 `API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
 凭据，其他接口不依赖大模型密钥即可运行。
 
-账号认证已在接口合同 `0.5.0` 中启用。注册和登录使用 V3 SQLite 数据结构签发
+账号认证已在接口合同 `0.6.0` 中启用。注册和登录使用 V5 SQLite 数据结构签发
 固定 180 天的 HttpOnly Session Cookie。聊天、反馈、提醒、记忆和指标接口都要求
 有效 Session，资源归属由后端确定；前端过渡期间多传的 `user_id` 会被忽略。
 所有写请求还必须来自配置的前端 Origin 或 API 同源页面。
 
 `GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接、迁移版本和
 本地模型客户端配置；该检查不会发送真实模型请求。
-聊天客户端可以发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
+聊天客户端必须发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
+执行期间后端会续租，旧执行批次不能覆盖新重试已经接管的结果。
 
 每轮聊天先调用一次结构化语义预处理模型生成 `SemanticFrame`，再运行主 Agent。
 语义帧标记最终操作、改口、撤销、歧义、用户消息证据编号和置信度；用户原文仍是
@@ -283,6 +285,23 @@ AUTH_COOKIE_NAME=yoko_session
 
 生产 HTTPS 环境必须使用 `AUTH_COOKIE_SECURE=true` 和
 `__Host-yoko_session` Cookie 名称。
+
+可选的 Web Push 在网页关闭后也能由后端投递到期提醒。生产环境配置如下；私钥只放在
+部署平台的 Secret 中，不能提交到仓库。浏览器首次授权后，前端会自动注册 Service
+Worker 和当前设备订阅。失效端点（HTTP 404/410）会自动停用，临时错误按指数退避重试。
+
+```text
+PUSH_ENABLED=true
+PUSH_POLL_SECONDS=15
+VAPID_PUBLIC_KEY=<URL-safe public key>
+VAPID_PRIVATE_KEY=<private key secret>
+VAPID_SUBJECT=mailto:admin@example.com
+```
+
+`MAX_REQUEST_BODY_BYTES` 默认为 `8388608`（8 MiB）；超限请求在业务解析前返回
+`413 REQUEST_TOO_LARGE`。该限制同时覆盖带和不带 `Content-Length` 的写请求。
+`MAX_CONCURRENT_CHAT_REQUESTS` 默认为 `4`；单实例达到上限时新聊天请求快速返回
+`429 TOO_MANY_ATTEMPTS`，避免长模型链无限排队。
 
 后端同时提供修改密码、JSON 账号数据导出和密码确认后的账号删除接口。API 默认附加
 安全响应头，并按 `.env.example` 中的 `RATE_LIMIT_*` 配置执行进程内限流；该实现适配

@@ -679,4 +679,11 @@ class ReminderService:
             local.microsecond,
             fold=local.fold,
         )
-        return datetime.combine(next_date, local_time, tzinfo=zone)
+        candidate = datetime.combine(next_date, local_time, tzinfo=zone)
+        # zoneinfo permits construction of imaginary wall times during a spring
+        # DST jump. Normalize through UTC so 02:30 becomes the first equivalent
+        # real instant (for example 03:30) instead of storing a nonexistent time.
+        normalized = candidate.astimezone(UTC).astimezone(zone)
+        candidate_wall = candidate.replace(tzinfo=None)
+        normalized_wall = normalized.replace(tzinfo=None)
+        return normalized if candidate_wall != normalized_wall else candidate

@@ -441,6 +441,32 @@ def test_weekly_ack_uses_next_local_week_across_dst(database: Database) -> None:
     )
 
 
+def test_daily_ack_normalizes_nonexistent_spring_dst_time(database: Database) -> None:
+    service = ReminderService(database)
+    created = service.create(
+        ReminderCreateRequest(
+            user_id="demo-user",
+            title="凌晨提醒",
+            next_trigger_at="2027-03-13T02:30:00-05:00",
+            timezone="America/New_York",
+            repeat_type="daily",
+        )
+    )
+
+    acknowledged = service.acknowledge(
+        created.id,
+        ReminderAckRequest(
+            user_id="demo-user",
+            expected_trigger_at=created.next_trigger_at,
+        ),
+    )
+
+    next_local = acknowledged.reminder.next_trigger_at.astimezone(
+        ZoneInfo("America/New_York")
+    )
+    assert next_local.isoformat() == "2027-03-14T03:30:00-04:00"
+
+
 def test_delayed_daily_ack_advances_until_next_trigger_is_future(
     database: Database,
 ) -> None:

@@ -4,6 +4,7 @@ import base64
 import ipaddress
 import re
 import socket
+import ssl
 from collections import OrderedDict
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -12,6 +13,7 @@ from time import monotonic, sleep
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
+import httpcore
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,45 @@ class WebSearchResponse:
     results: tuple[WebSearchResult, ...]
     cached: bool = False
     error: str | None = None
+
+
+class _PageTooLargeError(ValueError):
+    pass
+
+
+class _PinnedNetworkBackend:
+    def __init__(self, *, hostname: str, port: int, address: str) -> None:
+        self._hostname = hostname.casefold()
+        self._port = port
+        self._address = address
+        self._backend = httpcore.SyncBackend()
+
+    def connect_tcp(self, host, port, **kwargs):
+        if host.casefold() != self._hostname or port != self._port:
+            raise OSError("pinned transport target changed")
+        return self._backend.connect_tcp(self._address, port, **kwargs)
+
+    def connect_unix_socket(self, path, **kwargs):
+        raise OSError("unix sockets are not allowed for page fetches")
+
+    def sleep(self, seconds: float) -> None:
+        self._backend.sleep(seconds)
+
+
+class _PinnedHTTPTransport(httpx.HTTPTransport):
+    def __init__(self, *, hostname: str, port: int, address: str) -> None:
+        super().__init__(trust_env=False)
+        self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=ssl.create_default_context(),
+            max_connections=1,
+            max_keepalive_connections=0,
+            network_backend=_PinnedNetworkBackend(
+                hostname=hostname,
+                port=port,
+                address=address,
+            ),
+        )
 
 
 class _BingResultsParser(HTMLParser):
@@ -364,8 +405,6 @@ class WebSearchService:
                 ):
                     return ""
                 raw = response.content
-                if len(raw) > 512 * 1024:
-                    return ""
                 text = _decode_page(raw, content_type)
                 if "html" in content_type or "<html" in text[:500].casefold():
                     parser = _ReadableTextParser()
@@ -383,7 +422,7 @@ class WebSearchService:
                             self._page_cache.popitem(last=False)
                 return content
             return ""
-        except (httpx.HTTPError, UnicodeError, ValueError):
+        except (httpx.HTTPError, UnicodeError, ValueError, OSError):
             return ""
 
     def _page_request(self, url: str) -> httpx.Response:
@@ -393,46 +432,104 @@ class WebSearchService:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
         }
         if self._client is not None:
-            return self._client.get(
+            with self._client.stream(
+                "GET",
                 url,
                 headers=headers,
                 timeout=5,
                 follow_redirects=False,
-            )
-        with httpx.Client(follow_redirects=False) as client:
-            return client.get(url, headers=headers, timeout=5)
+            ) as response:
+                return self._bounded_response(response)
+
+        hostname, port, addresses = self._resolve_page_addresses(url)
+        last_error: Exception | None = None
+        for address in addresses:
+            try:
+                transport = _PinnedHTTPTransport(
+                    hostname=hostname,
+                    port=port,
+                    address=address,
+                )
+                with httpx.Client(
+                    transport=transport,
+                    follow_redirects=False,
+                    trust_env=False,
+                ) as client:
+                    with client.stream("GET", url, headers=headers, timeout=5) as response:
+                        return self._bounded_response(response)
+            except (httpx.HTTPError, OSError) as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise OSError("page hostname did not resolve to a public address")
+
+    @staticmethod
+    def _bounded_response(response: httpx.Response) -> httpx.Response:
+        maximum = 512 * 1024
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                declared_bytes = int(declared)
+            except ValueError as exc:
+                raise _PageTooLargeError("invalid page content-length") from exc
+            if declared_bytes < 0:
+                raise _PageTooLargeError("invalid page content-length")
+            if declared_bytes > maximum:
+                raise _PageTooLargeError("page response exceeds byte limit")
+        content = bytearray()
+        for chunk in response.iter_bytes():
+            content.extend(chunk)
+            if len(content) > maximum:
+                raise _PageTooLargeError("page response exceeds byte limit")
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=bytes(content),
+            request=response.request,
+            extensions=response.extensions,
+        )
 
     def _is_safe_page_url(self, url: str) -> bool:
         try:
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                return False
-            addresses = []
-            literal_address = False
-            try:
-                addresses.append(ipaddress.ip_address(parsed.hostname))
-                literal_address = True
-            except ValueError:
-                if self._client is not None:
-                    return True
-                addresses.extend(
-                    ipaddress.ip_address(item[4][0])
+            self._resolve_page_addresses(url)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _resolve_page_addresses(self, url: str) -> tuple[str, int, tuple[str, ...]]:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("unsupported page URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("page URL credentials are not allowed")
+        expected_port = 443 if parsed.scheme == "https" else 80
+        port = parsed.port or expected_port
+        if port != expected_port:
+            raise ValueError("non-standard page ports are not allowed")
+        hostname = parsed.hostname
+        try:
+            literal = ipaddress.ip_address(hostname)
+        except ValueError:
+            if self._client is not None:
+                return hostname, port, (hostname,)
+            resolved = tuple(
+                dict.fromkeys(
+                    item[4][0]
                     for item in socket.getaddrinfo(
-                        parsed.hostname,
-                        parsed.port or (443 if parsed.scheme == "https" else 80),
+                        hostname,
+                        port,
                         type=socket.SOCK_STREAM,
                     )
                 )
-            return bool(addresses) and all(
-                _is_public_address(item)
-                or (
-                    not literal_address
-                    and _is_proxy_fake_address(item)
-                )
-                for item in addresses
             )
-        except (OSError, ValueError):
-            return False
+            if not resolved:
+                raise OSError("page hostname did not resolve")
+            addresses = tuple(ipaddress.ip_address(item) for item in resolved)
+        else:
+            addresses = (literal,)
+        if not all(_is_public_address(item) for item in addresses):
+            raise ValueError("page hostname resolves to a non-public address")
+        return hostname, port, tuple(str(item) for item in addresses)
 
     def _get_cached_page(self, url: str) -> str | None:
         with self._lock:
@@ -501,14 +598,6 @@ def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
         or address.is_multicast
         or address.is_reserved
         or address.is_unspecified
-    )
-
-
-def _is_proxy_fake_address(
-    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
-) -> bool:
-    return isinstance(address, ipaddress.IPv4Address) and address in ipaddress.ip_network(
-        "198.18.0.0/15"
     )
 
 

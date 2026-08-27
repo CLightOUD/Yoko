@@ -2225,6 +2225,16 @@ def test_mutation_middleware_allows_one_structured_write() -> None:
     assert guarded.result[0].tool_calls[0]["name"] == "update_reminder"
 
 
+def test_mutation_middleware_caps_model_calls_per_agent_run() -> None:
+    response = ModelResponse(result=[AIMessage(content="done")])
+    middleware = MutationSafetyMiddleware(max_model_calls=2)
+
+    assert middleware.wrap_model_call(None, lambda _: response) is response
+    assert middleware.wrap_model_call(None, lambda _: response) is response
+    with pytest.raises(ModelUnavailableError, match="安全上限"):
+        middleware.wrap_model_call(None, lambda _: response)
+
+
 def test_model_cancelled_plan_does_not_stage_a_write(monkeypatch, tmp_path) -> None:
     message = "明天九点提醒我买菜，算了，不用设了。"
     database = Database(tmp_path / "cancelled-create.db")

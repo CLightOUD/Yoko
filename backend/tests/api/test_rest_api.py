@@ -58,6 +58,9 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
         ("patch", "/api/memories/{id}"),
         ("delete", "/api/memories/{id}"),
         ("get", "/api/metrics/summary"),
+        ("get", "/api/push/config"),
+        ("post", "/api/push/subscriptions"),
+        ("delete", "/api/push/subscriptions"),
     }
     document = api_app.openapi()
     actual_operations = {
@@ -72,7 +75,7 @@ def test_openapi_contains_all_contract_operations(api_app) -> None:
     assert any(
         parameter["name"] == "Idempotency-Key"
         and parameter["in"] == "header"
-        and parameter["required"] is False
+        and parameter["required"] is True
         for parameter in chat_parameters
     )
 
@@ -99,8 +102,69 @@ def test_readiness_reports_database_schema(client) -> None:
         "status": "ok",
         "database": "ok",
         "model": "ok",
-        "schema_version": 4,
+        "schema_version": 5,
     }
+
+
+def test_push_subscription_contract_and_idempotent_delete(client) -> None:
+    config = client.get("/api/push/config")
+    assert config.status_code == 200
+    assert config.json() == {
+        "enabled": False,
+        "application_server_key": None,
+    }
+
+    payload = {
+        "endpoint": "https://push.example.test/subscription/api",
+        "keys": {
+            "p256dh": "abcdefghijklmnop",
+            "auth": "qrstuvwxyzABCDEF",
+        },
+    }
+    created = client.post("/api/push/subscriptions", json=payload)
+    deleted = client.request(
+        "DELETE",
+        "/api/push/subscriptions",
+        json={"endpoint": payload["endpoint"]},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["active"] is True
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True}
+
+
+def test_chat_requires_idempotency_key(client) -> None:
+    hooks = client.event_hooks.get("request", [])
+    client.event_hooks["request"] = []
+    try:
+        response = client.post("/api/chat", json={"message": "你好"})
+    finally:
+        client.event_hooks["request"] = hooks
+
+    assert response.status_code == 422
+
+
+def test_request_body_limit_rejects_declared_oversize(client) -> None:
+    response = client.post(
+        "/api/feedback",
+        content=b"{}",
+        headers={"Content-Length": str(9 * 1024 * 1024)},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REQUEST_TOO_LARGE"
+
+
+def test_request_body_limit_rejects_chunked_oversize(client) -> None:
+    def chunks():
+        for _ in range(9):
+            yield b"x" * (1024 * 1024)
+
+    response = client.post("/api/feedback", content=chunks())
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REQUEST_TOO_LARGE"
 
 
 def test_readiness_reports_sanitized_model_configuration_failure(
@@ -393,6 +457,7 @@ def test_unconfigured_model_returns_documented_502(monkeypatch, tmp_path) -> Non
         response = client.post(
             "/api/chat",
             json={"user_id": "demo-user", "message": "你好"},
+            headers={"Idempotency-Key": "no-model-chat-0001"},
         )
 
     assert response.status_code == 502

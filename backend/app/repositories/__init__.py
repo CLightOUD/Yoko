@@ -3,6 +3,8 @@ from backend.app.repositories.chat_requests import ChatRequestRepository
 from backend.app.repositories.feedbacks import FeedbackRepository
 from backend.app.repositories.memories import MemoryEventRepository, MemoryRepository
 from backend.app.repositories.messages import MessageRepository
+from backend.app.repositories.push_subscriptions import PushSubscriptionRepository
+from backend.app.repositories.reminder_deliveries import ReminderDeliveryRepository
 from backend.app.repositories.metrics import MetricsRepository
 from backend.app.repositories.reminders import ReminderRepository
 from backend.app.repositories.users import UserRepository
@@ -14,6 +16,8 @@ __all__ = [
     "MemoryEventRepository",
     "MemoryRepository",
     "MessageRepository",
+    "PushSubscriptionRepository",
+    "ReminderDeliveryRepository",
     "MetricsRepository",
     "ReminderRepository",
     "UserRepository",

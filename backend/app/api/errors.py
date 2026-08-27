@@ -37,6 +37,7 @@ ERROR_DESCRIPTIONS = {
     400: "业务参数无效",
     404: "资源不存在",
     409: "资源状态冲突",
+    413: "请求体过大",
     422: "请求字段校验失败",
     429: "请求过于频繁",
     500: "服务器内部错误",
@@ -140,7 +141,7 @@ def install_error_handlers(app: FastAPI) -> None:
             ResourceConflictError: "资源状态冲突",
             ToolExecutionError: "外部工具暂不可用，请稍后重试",
             DatabaseUnavailableError: "数据库暂不可用",
-            TooManyAttemptsError: "登录失败次数过多，请稍后再试",
+            TooManyAttemptsError: "请求过于频繁，请稍后重试",
             UsernameAlreadyExistsError: "用户名已存在",
         }
         return error_response(

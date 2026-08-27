@@ -10,7 +10,7 @@ from backend.app.config import default_timezone
 
 
 DEFAULT_DATABASE_PATH = Path("backend/data/app.db")
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 MIGRATION_TABLE_SQL = """
@@ -205,6 +205,46 @@ CREATE INDEX idx_auth_sessions_expires_revoked
 """
 
 
+PUSH_DELIVERY_SQL = """
+CREATE TABLE push_subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    endpoint TEXT NOT NULL,
+    endpoint_hash TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+    last_success_at TEXT,
+    disabled_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_push_subscriptions_user_active
+    ON push_subscriptions(user_id, disabled_at, updated_at);
+
+CREATE TABLE reminder_deliveries (
+    id TEXT PRIMARY KEY,
+    reminder_id TEXT NOT NULL REFERENCES reminders(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id),
+    trigger_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    lease_expires_at TEXT NOT NULL,
+    next_attempt_at TEXT NOT NULL,
+    last_error_code TEXT,
+    sent_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(reminder_id, trigger_at, subscription_id)
+);
+
+CREATE INDEX idx_reminder_deliveries_claim
+    ON reminder_deliveries(status, next_attempt_at, lease_expires_at, id);
+"""
+
+
 class Database:
     """SQLite connection, schema initialization, and transaction boundary."""
 
@@ -247,6 +287,7 @@ class Database:
                 (2, "chat_request_idempotency", self._migration_chat_requests),
                 (3, "account_authentication", self._migration_account_authentication),
                 (4, "message_vision_metadata", self._migration_message_vision_metadata),
+                (5, "web_push_delivery", self._migration_web_push_delivery),
             )
             for version, name, migration in migrations:
                 if version in applied:
@@ -285,6 +326,8 @@ class Database:
                     UNION ALL SELECT 'request_metrics'
                     UNION ALL SELECT 'chat_requests'
                     UNION ALL SELECT 'auth_sessions'
+                    UNION ALL SELECT 'push_subscriptions'
+                    UNION ALL SELECT 'reminder_deliveries'
                 ) expected
                 WHERE name NOT IN (
                     SELECT name FROM sqlite_master WHERE type = 'table'
@@ -427,6 +470,14 @@ class Database:
                 connection.execute(
                     f"ALTER TABLE messages ADD COLUMN {column} {definition}"
                 )
+
+    @staticmethod
+    def _migration_web_push_delivery(
+        connection: sqlite3.Connection,
+        applied_at: str,
+    ) -> None:
+        del applied_at
+        Database._execute_script(connection, PUSH_DELIVERY_SQL)
 
     @staticmethod
     def _execute_script(connection: sqlite3.Connection, script: str) -> None:

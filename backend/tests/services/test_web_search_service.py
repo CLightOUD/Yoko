@@ -4,8 +4,13 @@ import base64
 from urllib.parse import quote
 
 import httpx
+import pytest
 
-from backend.app.services.web_search_service import WebSearchResult, WebSearchService
+from backend.app.services.web_search_service import (
+    WebSearchResult,
+    WebSearchService,
+    _PinnedNetworkBackend,
+)
 
 
 def _client(handler) -> httpx.Client:
@@ -269,7 +274,7 @@ def test_fetch_pages_rejects_private_redirect_and_limits_page_count() -> None:
     assert all("/third" not in url for url in requested)
 
 
-def test_url_safety_allows_proxy_fake_dns_only_for_domain_names(monkeypatch) -> None:
+def test_url_safety_rejects_proxy_fake_dns_and_private_targets(monkeypatch) -> None:
     monkeypatch.setattr(
         "backend.app.services.web_search_service.socket.getaddrinfo",
         lambda *args, **kwargs: [
@@ -278,6 +283,52 @@ def test_url_safety_allows_proxy_fake_dns_only_for_domain_names(monkeypatch) -> 
     )
     service = WebSearchService(minimum_interval_seconds=0)
 
-    assert service._is_safe_page_url("https://public.example/article") is True
+    assert service._is_safe_page_url("https://public.example/article") is False
     assert service._is_safe_page_url("https://198.18.1.35/article") is False
     assert service._is_safe_page_url("http://127.0.0.1/admin") is False
+
+
+def test_pinned_network_backend_connects_only_to_resolved_address() -> None:
+    calls = []
+
+    class FakeBackend:
+        def connect_tcp(self, host, port, **kwargs):
+            calls.append((host, port, kwargs))
+            return "stream"
+
+    backend = _PinnedNetworkBackend(
+        hostname="public.example",
+        port=443,
+        address="203.0.113.10",
+    )
+    backend._backend = FakeBackend()
+
+    assert backend.connect_tcp("public.example", 443, timeout=5) == "stream"
+    assert calls == [("203.0.113.10", 443, {"timeout": 5})]
+    with pytest.raises(OSError, match="target changed"):
+        backend.connect_tcp("rebound.example", 443, timeout=5)
+
+
+def test_page_response_limit_is_enforced_while_streaming() -> None:
+    class OversizedStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(9):
+                yield b"x" * (64 * 1024)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=OversizedStream(),
+            headers={"Content-Type": "text/plain"},
+            request=request,
+        )
+
+    service = WebSearchService(
+        client=_client(handler),
+        minimum_interval_seconds=0,
+    )
+    result = service.fetch_pages(
+        (WebSearchResult("oversized", "https://example.com/large", "摘要"),)
+    )
+
+    assert result[0].content == ""

@@ -26,7 +26,7 @@ CurrentUserDependency = Annotated[UserView, Depends(get_current_user)]
 @router.post(
     "/chat",
     response_model=ChatResponse,
-    responses=error_responses(400, 401, 403, 404, 409, 422, 500, 502, 503),
+    responses=error_responses(400, 401, 403, 404, 409, 422, 429, 500, 502, 503),
     dependencies=[Depends(require_trusted_origin)],
 )
 def chat(
@@ -34,14 +34,14 @@ def chat(
     service: ChatServiceDependency,
     current_user: CurrentUserDependency,
     idempotency_key: Annotated[
-        str | None,
+        str,
         Header(
             alias="Idempotency-Key",
             min_length=8,
             max_length=128,
             pattern=r"^[A-Za-z0-9._:-]+$",
         ),
-    ] = None,
+    ],
 ) -> ChatResponse:
     command = ChatRequest(
         user_id=str(current_user.id),

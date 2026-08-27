@@ -21,6 +21,7 @@ from backend.app.api.feedback import router as feedback_router
 from backend.app.api.health import router as health_router
 from backend.app.api.memories import router as memories_router
 from backend.app.api.metrics import router as metrics_router
+from backend.app.api.push import router as push_router
 from backend.app.api.reminders import router as reminders_router
 from backend.app.database import Database
 from backend.app.logging_config import configure_logging
@@ -31,6 +32,7 @@ from backend.app.services.chat_service import ChatService
 from backend.app.services.feedback_service import FeedbackService
 from backend.app.services.vision_contract import VisionAnalyzer
 from backend.app.services.vision_service import VisionService
+from backend.app.services.push_delivery_service import PushDeliveryService
 
 load_dotenv()
 logger = logging.getLogger("yoko.http")
@@ -56,6 +58,7 @@ def create_app(
         memory_service = MemoryService(active_database)
         metrics_service = MetricsService(active_database)
         feedback_service = FeedbackService(active_database, memory_service)
+        push_delivery_service = PushDeliveryService(active_database)
         chat_service = ChatService(
             active_database,
             memory_service=memory_service,
@@ -70,12 +73,22 @@ def create_app(
         app.state.memory_service = memory_service
         app.state.metrics_service = metrics_service
         app.state.feedback_service = feedback_service
+        app.state.push_delivery_service = push_delivery_service
         app.state.chat_service = chat_service
-        yield
+        push_delivery_service.start()
+        try:
+            yield
+        finally:
+            push_delivery_service.stop()
 
-    application = FastAPI(title="Yoko API", version="0.5.0", lifespan=lifespan)
+    application = FastAPI(title="Yoko API", version="0.6.0", lifespan=lifespan)
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:5173")
     rate_limiter = RequestRateLimiter()
+    max_request_body_bytes = int(
+        os.getenv("MAX_REQUEST_BODY_BYTES", str(8 * 1024 * 1024))
+    )
+    if max_request_body_bytes <= 0:
+        raise RuntimeError("MAX_REQUEST_BODY_BYTES must be positive")
 
     @application.middleware("http")
     async def attach_request_id(request: Request, call_next):
@@ -93,7 +106,48 @@ def create_app(
                 session_token=session_token,
             )
             if limited is None:
-                response = await call_next(request)
+                content_length = request.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError:
+                        declared_length = -1
+                    if declared_length < 0:
+                        response = error_response(
+                            request,
+                            status_code=400,
+                            code="INVALID_REQUEST",
+                            message="Content-Length 无效",
+                        )
+                    elif declared_length > max_request_body_bytes:
+                        response = error_response(
+                            request,
+                            status_code=413,
+                            code="REQUEST_TOO_LARGE",
+                            message="请求体超过允许大小",
+                        )
+                    else:
+                        response = await call_next(request)
+                elif request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                    chunks = bytearray()
+                    too_large = False
+                    async for chunk in request.stream():
+                        chunks.extend(chunk)
+                        if len(chunks) > max_request_body_bytes:
+                            too_large = True
+                            break
+                    if too_large:
+                        response = error_response(
+                            request,
+                            status_code=413,
+                            code="REQUEST_TOO_LARGE",
+                            message="请求体超过允许大小",
+                        )
+                    else:
+                        request._body = bytes(chunks)
+                        response = await call_next(request)
+                else:
+                    response = await call_next(request)
             else:
                 response = error_response(
                     request,
@@ -156,6 +210,7 @@ def create_app(
     application.include_router(reminders_router)
     application.include_router(memories_router)
     application.include_router(metrics_router)
+    application.include_router(push_router)
 
     # Keep this mount last so API, OpenAPI, and documentation routes win first.
     if frontend_dist is not None and (frontend_dist / "index.html").is_file():

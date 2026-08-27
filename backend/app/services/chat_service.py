@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
+from threading import BoundedSemaphore, Event, Thread
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -29,6 +33,7 @@ from backend.app.services.errors import (
     ModelNotReadyError,
     ResourceConflictError,
     ResourceNotFoundError,
+    TooManyAttemptsError,
 )
 from backend.app.services.image_validation import (
     ValidatedChatImage,
@@ -48,6 +53,7 @@ class ChatExecution:
     request_id: UUID
     conversation_id: UUID
     user_message_id: UUID
+    attempt_count: int
     cached_response: ChatResponse | None = None
 
 
@@ -74,6 +80,10 @@ class ChatService:
         self.chat_requests = ChatRequestRepository(database)
         self.messages = MessageRepository(database)
         self.users = UserRepository(database)
+        max_concurrent = int(os.getenv("MAX_CONCURRENT_CHAT_REQUESTS", "4"))
+        if max_concurrent <= 0:
+            raise RuntimeError("MAX_CONCURRENT_CHAT_REQUESTS must be positive")
+        self._chat_slots = BoundedSemaphore(max_concurrent)
 
     def check_model_readiness(self) -> None:
         checker = getattr(self.agent, "check_readiness", None)
@@ -81,6 +91,22 @@ class ChatService:
             checker()
 
     def run(
+        self,
+        request: ChatRequest,
+        *,
+        idempotency_key: str | None = None,
+    ) -> ChatResponse:
+        if not self._chat_slots.acquire(blocking=False):
+            raise TooManyAttemptsError("聊天请求繁忙，请稍后重试")
+        try:
+            return self._run_with_slot(
+                request,
+                idempotency_key=idempotency_key,
+            )
+        finally:
+            self._chat_slots.release()
+
+    def _run_with_slot(
         self,
         request: ChatRequest,
         *,
@@ -97,18 +123,20 @@ class ChatService:
             return execution.cached_response
 
         try:
-            return self._execute(
-                request,
-                execution,
-                overall_started=overall_started,
-                validated_image=validated_image,
-            )
+            with self._lease_heartbeat(execution, user_id=request.user_id):
+                return self._execute(
+                    request,
+                    execution,
+                    overall_started=overall_started,
+                    validated_image=validated_image,
+                )
         except Exception as exc:
             try:
                 self.chat_requests.fail(
                     request_id=str(execution.request_id),
                     user_id=request.user_id,
                     failure_code=type(exc).__name__,
+                    expected_attempt_count=execution.attempt_count,
                 )
             except Exception:
                 logger.exception(
@@ -176,6 +204,7 @@ class ChatService:
             request_id=request_id,
             conversation_id=conversation_id,
             user_message_id=UUID(user_message["id"]),
+            attempt_count=1,
         )
 
     def _reuse_existing(
@@ -192,6 +221,7 @@ class ChatService:
                 request_id=UUID(existing["id"]),
                 conversation_id=UUID(existing["conversation_id"]),
                 user_message_id=UUID(existing["user_message_id"]),
+                attempt_count=int(existing["attempt_count"]),
                 cached_response=ChatResponse.model_validate_json(
                     existing["response_json"]
                 ),
@@ -211,6 +241,7 @@ class ChatService:
             request_id=UUID(reclaimed["id"]),
             conversation_id=UUID(reclaimed["conversation_id"]),
             user_message_id=UUID(reclaimed["user_message_id"]),
+            attempt_count=int(reclaimed["attempt_count"]),
         )
 
     def _execute(
@@ -277,7 +308,11 @@ class ChatService:
                 user_id=request.user_id,
                 connection=connection,
             )
-            if active is None or active["status"] != "pending":
+            if (
+                active is None
+                or active["status"] != "pending"
+                or int(active["attempt_count"]) != execution.attempt_count
+            ):
                 raise ResourceConflictError("聊天请求状态发生变化")
             agent_result = agent_result.commit_reminder_mutation(
                 connection=connection
@@ -362,10 +397,51 @@ class ChatService:
                 request_id=str(execution.request_id),
                 user_id=request.user_id,
                 response_json=response.model_dump_json(by_alias=True),
+                expected_attempt_count=execution.attempt_count,
                 connection=connection,
             ):
                 raise ResourceConflictError("聊天请求状态发生变化")
         return response
+
+    @contextmanager
+    def _lease_heartbeat(
+        self,
+        execution: ChatExecution,
+        *,
+        user_id: str,
+    ) -> Iterator[None]:
+        stop = Event()
+        interval = max(0.05, min(30.0, self.REQUEST_LEASE_SECONDS / 3))
+
+        def renew() -> None:
+            while not stop.wait(interval):
+                try:
+                    renewed = self.chat_requests.renew_lease(
+                        request_id=str(execution.request_id),
+                        user_id=user_id,
+                        expected_attempt_count=execution.attempt_count,
+                        lease_seconds=self.REQUEST_LEASE_SECONDS,
+                    )
+                except Exception:
+                    logger.exception(
+                        "chat_lease_heartbeat_failed",
+                        extra={"chat_request_id": str(execution.request_id)},
+                    )
+                    continue
+                if not renewed:
+                    return
+
+        thread = Thread(
+            target=renew,
+            name=f"chat-lease-{execution.request_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=interval + 1)
 
     def get_request_status(
         self,

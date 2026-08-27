@@ -297,6 +297,8 @@ class AuthService:
             ):
                 raise InvalidCredentialsError("用户名或密码错误")
             for table in (
+                "reminder_deliveries",
+                "push_subscriptions",
                 "feedbacks",
                 "memory_events",
                 "memories",

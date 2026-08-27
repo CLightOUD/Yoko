@@ -201,6 +201,24 @@ export function getChatRequestStatus(idempotencyKey) {
   return request(`/api/chat/requests/${encodeURIComponent(idempotencyKey)}`)
 }
 
+export function getPushConfig() {
+  return request('/api/push/config')
+}
+
+export function subscribePush(subscription) {
+  return request('/api/push/subscriptions', {
+    method: 'POST',
+    body: subscription,
+  })
+}
+
+export function unsubscribePush(endpoint) {
+  return request('/api/push/subscriptions', {
+    method: 'DELETE',
+    body: { endpoint },
+  })
+}
+
 // 结构化反馈：点赞/点踩/编辑
 export function sendFeedback({
   request_id,

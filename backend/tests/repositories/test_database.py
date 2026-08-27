@@ -21,6 +21,8 @@ EXPECTED_TABLES = {
     "memories",
     "memory_events",
     "messages",
+    "push_subscriptions",
+    "reminder_deliveries",
     "reminders",
     "request_metrics",
     "schema_migrations",
@@ -160,7 +162,7 @@ def test_initialize_migrates_weekly_and_consolidates_legacy_duplicates(
         {"id": "daily", "title": "吃降压药", "status": "active"},
     ]
     assert unique_index is not None
-    assert versions == [1, 2, 3, 4]
+    assert versions == [1, 2, 3, 4, 5]
     assert path.with_name("legacy.pre-migration-v1.bak").exists()
 
 
@@ -230,7 +232,7 @@ def test_v2_to_latest_migration_preserves_owned_business_data(tmp_path) -> None:
             """
         ).fetchone()
 
-    assert database.schema_version() == 4
+    assert database.schema_version() == 5
     assert counts == {table: 1 for table in counts}
     assert owners == {table: "legacy-user" for table in owners}
     assert tuple(account) == (None, None, None)

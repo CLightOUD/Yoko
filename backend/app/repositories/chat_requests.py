@@ -122,6 +122,7 @@ class ChatRequestRepository(BaseRepository):
         request_id: str,
         user_id: str,
         response_json: str,
+        expected_attempt_count: int,
         connection: sqlite3.Connection,
     ) -> bool:
         cursor = connection.execute(
@@ -130,9 +131,43 @@ class ChatRequestRepository(BaseRepository):
             SET status = 'completed', response_json = ?, failure_code = NULL,
                 updated_at = ?
             WHERE id = ? AND user_id = ? AND status = 'pending'
+              AND attempt_count = ?
             """,
-            (response_json, utc_now_iso(), request_id, user_id),
+            (
+                response_json,
+                utc_now_iso(),
+                request_id,
+                user_id,
+                expected_attempt_count,
+            ),
         )
+        return cursor.rowcount == 1
+
+    def renew_lease(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        expected_attempt_count: int,
+        lease_seconds: int,
+    ) -> bool:
+        now = datetime.now(UTC)
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE chat_requests
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'pending'
+                  AND attempt_count = ?
+                """,
+                (
+                    (now + timedelta(seconds=lease_seconds)).isoformat(),
+                    now.isoformat(),
+                    request_id,
+                    user_id,
+                    expected_attempt_count,
+                ),
+            )
         return cursor.rowcount == 1
 
     def fail(
@@ -141,6 +176,7 @@ class ChatRequestRepository(BaseRepository):
         request_id: str,
         user_id: str,
         failure_code: str,
+        expected_attempt_count: int,
         connection: sqlite3.Connection | None = None,
     ) -> bool:
         with self._connection(connection, write=True) as active_connection:
@@ -150,7 +186,14 @@ class ChatRequestRepository(BaseRepository):
                 SET status = 'failed', response_json = NULL, failure_code = ?,
                     updated_at = ?
                 WHERE id = ? AND user_id = ? AND status = 'pending'
+                  AND attempt_count = ?
                 """,
-                (failure_code[:64], utc_now_iso(), request_id, user_id),
+                (
+                    failure_code[:64],
+                    utc_now_iso(),
+                    request_id,
+                    user_id,
+                    expected_attempt_count,
+                ),
             )
         return cursor.rowcount == 1

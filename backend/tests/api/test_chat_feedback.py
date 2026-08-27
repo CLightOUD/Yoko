@@ -1,7 +1,48 @@
 from datetime import UTC, datetime, timedelta
+from threading import BoundedSemaphore
+from time import sleep
+from uuid import uuid4
 
 from backend.app.schemas import ChatRequest
+from backend.app.services.chat_service import ChatExecution
 from backend.app.services.errors import ModelUnavailableError
+
+
+def test_chat_lease_heartbeat_renews_the_same_attempt(client, monkeypatch) -> None:
+    service = client.app.state.chat_service
+    service.REQUEST_LEASE_SECONDS = 0.15
+    calls = []
+
+    def renew_lease(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(service.chat_requests, "renew_lease", renew_lease)
+    execution = ChatExecution(
+        request_id=uuid4(),
+        conversation_id=uuid4(),
+        user_message_id=uuid4(),
+        attempt_count=3,
+    )
+
+    with service._lease_heartbeat(execution, user_id="demo-user"):
+        sleep(0.13)
+
+    assert len(calls) >= 2
+    assert {call["expected_attempt_count"] for call in calls} == {3}
+
+
+def test_chat_concurrency_gate_fails_fast(client) -> None:
+    service = client.app.state.chat_service
+    service._chat_slots = BoundedSemaphore(1)
+    assert service._chat_slots.acquire(blocking=False) is True
+    try:
+        response = client.post("/api/chat", json={"message": "你好"})
+    finally:
+        service._chat_slots.release()
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "TOO_MANY_ATTEMPTS"
 
 
 def test_feedback_memory_is_retrieved_and_used_by_later_chat(client) -> None:

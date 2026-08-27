@@ -236,6 +236,8 @@ def test_account_export_password_change_and_deletion(client) -> None:
             "feedbacks",
             "chat_requests",
             "auth_sessions",
+            "push_subscriptions",
+            "reminder_deliveries",
         ):
             column = "id" if table == "users" else "user_id"
             count = connection.execute(

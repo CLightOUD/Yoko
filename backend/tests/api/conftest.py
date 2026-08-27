@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -130,6 +131,16 @@ def client(api_app: FastAPI):
         raise_server_exceptions=False,
         headers={"Origin": "http://127.0.0.1:5173"},
     ) as active_client:
+        def add_chat_idempotency_key(request) -> None:
+            if (
+                request.url.path == "/api/chat"
+                and "Idempotency-Key" not in request.headers
+            ):
+                request.headers["Idempotency-Key"] = f"test-{uuid4()}"
+
+        active_client.event_hooks.setdefault("request", []).append(
+            add_chat_idempotency_key
+        )
         registered = active_client.post(
             "/api/auth/register",
             json={

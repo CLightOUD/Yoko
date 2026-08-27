@@ -1,6 +1,6 @@
 # Yoko API 接口规范
 
-- 版本：`0.5.0`
+- 版本：`0.6.0`
 - 状态：账号认证和业务接口 Session 隔离已接入
 适用范围：适老陪伴、提醒、反馈记忆与效果评估
 
@@ -29,7 +29,7 @@ MVP 需要同时满足：
 - 支持无记忆、命中记忆和过滤无关记忆。
 - 支持用户反馈创建、覆盖或跳过记忆。
 - 支持一次性提醒和每日提醒。
-- 支持前端轮询、确认提醒和防止重复确认。
+- 支持前端轮询、Web Push、确认提醒和防止重复确认。
 - 支持用户查看、修改、停用和删除记忆。
 - 返回记忆使用情况、Token 数和各阶段耗时。
 - 支持用户名密码注册、登录、退出和固定 180 天 Session。
@@ -44,13 +44,13 @@ MVP 需要同时满足：
 - WebSocket、SSE 流式输出。
 - 向量数据库和相似度搜索。
 - 通用 Cron 表达式。
-- 网页关闭后的可靠系统通知。
 - 文件上传、语音识别和多模态输入。
 - 历史会话列表、跨设备会话恢复。
 
-MVP 使用前端每 20 至 30 秒轮询到期提醒。网页关闭后不能保证提醒触发，演示时必须明确说明。
+前端保留每 20 至 30 秒的到期轮询；启用并配置 VAPID 后，后端还会在网页关闭时通过
+Web Push 投递。推送是尽力投递，不替代提醒数据本身，前端重新打开后仍应通过到期接口补偿。
 
-账号认证已接入 V3 数据库和真实 `AuthService`。除健康检查、就绪检查、注册和登录外，所有业务接口都要求有效 Session；客户端提交的 `user_id` 不参与资源归属判断。
+账号认证已接入 V5 数据库和真实 `AuthService`。除健康检查、就绪检查、注册和登录外，所有业务接口都要求有效 Session；客户端提交的 `user_id` 不参与资源归属判断。
 
 ## 3. 通用约定
 
@@ -75,7 +75,7 @@ API prefix: /api
 - 响应模型中的字段固定返回，不允许后端因值为空而临时省略字段。
 - 列表没有数据时返回 `[]`，可空单值返回 `null`，不能用空字符串代替。
 - 成功响应直接返回对应模型，不额外包裹 `data`；错误响应统一使用 `ErrorResponse`。
-- `POST /api/chat` 可携带 `Idempotency-Key` 请求头；同一次业务请求重试时必须复用原键。
+- `POST /api/chat` 必须携带 `Idempotency-Key` 请求头；同一次业务请求重试时必须复用原键。
 
 #### 3.2.1 “模型”术语说明
 
@@ -104,8 +104,9 @@ API prefix: /api
 | `403` | 写请求缺少可信 `Origin` 或来源不受信任 |
 | `404` | 会话、提醒、记忆或请求不存在 |
 | `409` | 提醒已被修改、确认时间已失效或资源状态冲突 |
+| `413` | 请求体超过服务端允许的最大字节数 |
 | `422` | Pydantic 字段校验失败 |
-| `429` | 登录失败次数过多，需要暂时等待 |
+| `429` | 登录失败次数过多、请求频率或聊天并发达到上限 |
 | `502` | 模型或工具故障导致无法形成有效业务响应 |
 | `503` | 数据库或必要运行依赖尚未就绪 |
 | `500` | 未处理的服务端错误 |
@@ -131,6 +132,7 @@ AUTHENTICATION_UNAVAILABLE
 INVALID_CREDENTIALS
 INVALID_REQUEST
 ORIGIN_NOT_ALLOWED
+REQUEST_TOO_LARGE
 RESOURCE_NOT_FOUND
 RESOURCE_CONFLICT
 TOO_MANY_ATTEMPTS
@@ -182,7 +184,7 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `POST /api/auth/password` | `400 INVALID_REQUEST`、`401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
 | `GET /api/account/export` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND` |
 | `DELETE /api/account` | `401 INVALID_CREDENTIALS`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
-| `POST /api/chat` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
+| `POST /api/chat` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST`、`429 TOO_MANY_ATTEMPTS`、`502 MODEL_UNAVAILABLE`、`502 TOOL_EXECUTION_FAILED` |
 | `GET /api/chat/requests/{idempotency_key}` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/feedback` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -191,6 +193,9 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `PATCH /api/reminders/{id}` | `400 INVALID_REQUEST`、`401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
 | `DELETE /api/reminders/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `POST /api/reminders/{id}/ack` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
+| `GET /api/push/config` | `401 AUTHENTICATION_REQUIRED` |
+| `POST /api/push/subscriptions` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
+| `DELETE /api/push/subscriptions` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`422 INVALID_REQUEST` |
 | `GET /api/memories` | `401 AUTHENTICATION_REQUIRED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
 | `PATCH /api/memories/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`409 RESOURCE_CONFLICT`、`422 INVALID_REQUEST` |
 | `DELETE /api/memories/{id}` | `401 AUTHENTICATION_REQUIRED`、`403 ORIGIN_NOT_ALLOWED`、`404 RESOURCE_NOT_FOUND`、`422 INVALID_REQUEST` |
@@ -198,7 +203,14 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 
 对重复反馈、重复删除和相同 `expected_trigger_at` 的重复确认，服务端返回原成功结果，不返回冲突错误。
 
+所有带请求体的写接口受 `MAX_REQUEST_BODY_BYTES` 限制，默认 8 MiB。无论请求是否携带
+`Content-Length`，超限都返回 `413 REQUEST_TOO_LARGE`，且不会进入路由业务逻辑。
+
 除健康与就绪探针外，API 还执行可配置的进程内限流；超过通用、认证或聊天窗口时返回 `429 TOO_MANY_ATTEMPTS`，并携带 `Retry-After`。所有 API 响应均使用 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff`、点击劫持限制、Referrer/Permissions Policy 和 CSP；HTTPS 响应额外携带 HSTS。当前限流状态仅适用于单进程部署，多实例必须改用共享限流设施。
+
+聊天服务另设 `MAX_CONCURRENT_CHAT_REQUESTS` 单实例并发闸门（默认 4）。槽位已满时
+立即返回 `429 TOO_MANY_ATTEMPTS`，不进入幂等记录、模型或工具执行；多实例部署应在
+容量规划中按实例数计算总并发，并在网关设置对应上限。
 
 ## 4. 接口总览
 
@@ -213,7 +225,7 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `POST` | `/api/auth/password` | Cookie: Session; Body: `ChangePasswordRequest` | `200` | `AuthResponse` |
 | `GET` | `/api/account/export` | Cookie: Session | `200` | `AccountExportResponse` |
 | `DELETE` | `/api/account` | Cookie: Session; Body: `AccountDeleteRequest` | `200` | `AccountDeleteResponse` |
-| `POST` | `/api/chat` | Header: 可选 `Idempotency-Key`; Body: `ChatRequestBody` | `200` | `ChatResponse` |
+| `POST` | `/api/chat` | Header: 必填 `Idempotency-Key`; Body: `ChatRequestBody` | `200` | `ChatResponse` |
 | `GET` | `/api/chat/requests/{idempotency_key}` | Cookie: Session; Path: `idempotency_key` | `200` | `ChatRequestStatusResponse` |
 | `POST` | `/api/feedback` | Body: `FeedbackRequestBody` | `200` | `FeedbackResponse` |
 | `POST` | `/api/reminders` | Body: `ReminderCreateBody` | `201` | `ReminderView` |
@@ -222,6 +234,9 @@ FastAPI 的 `RequestValidationError` 需要通过异常处理器转换为上述�
 | `PATCH` | `/api/reminders/{id}` | Path: `id`; Body: `ReminderUpdateBody` | `200` | `ReminderView` |
 | `DELETE` | `/api/reminders/{id}` | Path: `id` | `200` | `DeleteResponse` |
 | `POST` | `/api/reminders/{id}/ack` | Path: `id`; Body: `ReminderAckBody` | `200` | `ReminderAckResponse` |
+| `GET` | `/api/push/config` | Cookie: Session | `200` | `PushConfigResponse` |
+| `POST` | `/api/push/subscriptions` | Cookie: Session; Body: `PushSubscriptionBody` | `200` | `PushSubscriptionResponse` |
+| `DELETE` | `/api/push/subscriptions` | Cookie: Session; Body: `PushSubscriptionDeleteBody` | `200` | `PushSubscriptionDeleteResponse` |
 | `GET` | `/api/memories` | Query: `MemoryListParams` | `200` | `MemoryListResponse` |
 | `PATCH` | `/api/memories/{id}` | Path: `id`; Body: `MemoryUpdateBody` | `200` | `MemoryView` |
 | `DELETE` | `/api/memories/{id}` | Path: `id` | `200` | `DeleteResponse` |
@@ -800,7 +815,7 @@ completed | needs_clarification | partial
 
 模型不可用或系统故障导致无法生成有效 `ChatResponse` 时返回 `502`。能够生成解释性回答的工具失败返回 `200 + status=partial`，不使用不存在的 `status=failed`。
 
-携带 `Idempotency-Key` 时，同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。Agent 只返回待提交的提醒变更；`ChatService` 再把提醒变更、记忆、助手消息、指标和缓存响应放入同一事务。任何收尾步骤失败都会回滚提醒变更，同键重试不会重复产生提醒副作用。
+`Idempotency-Key` 为必填。同一用户、同一键和相同请求体首次完成后，后续重试返回原 `ChatResponse`，不会重复调用 Agent、写消息或写指标。相同键配合不同请求体，或原请求仍在租约期内处理中时，返回 `409 RESOURCE_CONFLICT`。执行中的请求定期续租；只有当前 `attempt_count` 批次可以续租、失败或完成，已被新重试接管的旧批次不能覆盖新状态。失败请求可使用相同键重新执行，并复用原 `request_id`、`conversation_id` 和用户消息；创建工具按提醒计划去重，修改和删除工具使用真实提醒 ID。Agent 只返回待提交的提醒变更；`ChatService` 再把提醒变更、记忆、助手消息、指标和缓存响应放入同一事务。任何收尾步骤失败都会回滚提醒变更，同键重试不会重复产生提醒副作用。主 Agent 单次运行还设有模型调用次数上限，防止工具循环无限消耗资源。
 
 ### `GET /api/chat/requests/{idempotency_key}`
 
@@ -1074,7 +1089,7 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模�
 - 重复提交相同确认不得再次推进日期。
 - 提醒已被其他请求修改：返回 `409 RESOURCE_CONFLICT`。
 
-每日和每周提醒必须按 `timezone` 的本地自然日期计算相同钟点，不能简单增加固定小时数，否则夏令时地区会产生偏移。
+每日和每周提醒必须按 `timezone` 的本地自然日期计算相同钟点，不能简单增加固定小时数，否则夏令时地区会产生偏移。若目标钟点落在春季跳时造成的“不存在本地时间”，后端通过 UTC 往返归一化到跳时后的第一个等价有效时刻；秋季重复钟点保持时区库默认的第一次出现。
 
 成功响应：`200 OK`，模型为 `ReminderAckResponse`。
 
@@ -1095,6 +1110,25 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模�
   "already_acknowledged": false
 }
 ```
+
+### 9.7 Web Push 订阅与投递
+
+`GET /api/push/config` 返回 `PushConfigResponse`：`enabled` 表示部署是否启用推送；仅在
+启用时返回 URL-safe `application_server_key`。接口要求有效 Session，但不返回私钥。
+
+`POST /api/push/subscriptions` 接收浏览器 `PushSubscription` 的 HTTPS `endpoint` 及
+`keys.p256dh`、`keys.auth`，按端点哈希幂等新增或恢复当前用户订阅，返回订阅 UUID 和
+`active=true`。`DELETE /api/push/subscriptions` 接收同一端点并幂等停用，返回
+`{"deleted": true}`。两个写接口都要求可信 Origin。
+
+启用 `PUSH_ENABLED=true` 时，后台线程按 `PUSH_POLL_SECONDS` 扫描到期提醒，为每个
+`reminder_id + subscription_id + trigger_at` 建立唯一投递记录并加短租约，避免同一实例
+重复发送。成功后标记 `sent`；临时失败最多重试 5 次并指数退避；推送服务返回 404 或
+410 时立即停用该端点。通知内容只包含提醒标题、提醒 ID 和计划触发时间，不包含模型
+对话或账号凭据。VAPID 私钥只能通过部署 Secret 注入。
+
+Web Push 属于尽力投递：浏览器/操作系统策略、离线时长或第三方推送服务仍可能影响
+送达。`GET /api/reminders/due` 保留为重新打开网页后的权威补偿通道。
 
 ## 10. 记忆接口
 
