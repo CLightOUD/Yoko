@@ -239,8 +239,22 @@ export default function RemindersPage() {
   }, [filter])
 
   useEffect(() => {
-    load()
-  }, [load])
+    let cancelled = false
+    async function fetchData() {
+      setLoading(true)
+      setError('')
+      try {
+        const res = await listReminders({ status: filter })
+        if (!cancelled) setItems(res.items)
+      } catch (err) {
+        if (!cancelled) setError(err.message || '加载提醒失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    fetchData()
+    return () => { cancelled = true }
+  }, [filter])
 
   // “全部”会包含已删除项，展示时隐藏，避免用户看到删除的提醒。
   const visible = items.filter((r) => r.status !== REMINDER_STATUS.DELETED)

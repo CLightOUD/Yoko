@@ -39,8 +39,22 @@ export default function MetricsPage() {
   }, [])
 
   useEffect(() => {
-    load()
-  }, [load])
+    let cancelled = false
+    async function fetchData() {
+      setLoading(true)
+      setError('')
+      try {
+        const res = await getMetricsSummary()
+        if (!cancelled) setSummary(res)
+      } catch (err) {
+        if (!cancelled) setError(err.message || '加载指标失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    fetchData()
+    return () => { cancelled = true }
+  }, [])
 
   return (
     <div className="page">

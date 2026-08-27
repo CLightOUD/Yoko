@@ -49,6 +49,12 @@ export default function ReminderAlarm() {
   const seenRef = useRef(new Set())
   const notifiedRef = useRef(new Set())
   const pollingRef = useRef(false)
+  const alarmRef = useRef(alarm)
+
+  // 同步 ref 以便在异步回调中读取最新 alarm 值
+  useEffect(() => {
+    alarmRef.current = alarm
+  })
 
   const poll = useCallback(async () => {
     if (pollingRef.current) return
@@ -63,6 +69,12 @@ export default function ReminderAlarm() {
           const existing = new Set(prev.map(keyOf))
           return [...prev, ...fresh.filter((r) => !existing.has(keyOf(r)))]
         })
+        // 无当前弹窗时，弹出第一条并响铃
+        if (!alarmRef.current) {
+          setAckError('')
+          setAlarm(fresh[0])
+          playAlarm()
+        }
       }
       // 浏览器通知：每条到期提醒只推送一次
       items.forEach((r) => {
@@ -110,15 +122,6 @@ export default function ReminderAlarm() {
       window.removeEventListener('keydown', unlock)
     }
   }, [poll])
-
-  // 有待确认项且当前无弹窗 → 弹出第一条并响铃
-  useEffect(() => {
-    if (queue.length && !alarm) {
-      setAckError('')
-      setAlarm(queue[0])
-      playAlarm()
-    }
-  }, [queue, alarm])
 
   async function handleAck() {
     if (!alarm || acknowledging) return

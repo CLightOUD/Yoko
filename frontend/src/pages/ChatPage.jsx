@@ -27,7 +27,6 @@ import {
   FEEDBACK_RATING,
   MEMORY_ACTION_LABEL,
   TASK_TYPE_LABEL,
-  TOOL_STATUS,
 } from '../api/constants'
 import { useAuth } from '../auth/useAuth'
 import { formatMs } from '../api/format.js'
@@ -39,7 +38,7 @@ import {
   saveChatHistory,
   stripTransientImageData,
 } from '../chatStorage.js'
-import { validateImageFile, fileToBase64, fileToPreviewUrl } from '../utils/imageUtils.js'
+import MarkdownMessage from '../components/MarkdownMessage.jsx'
 
 let idCounter = 0
 const CHAT_STATUS_POLL_INTERVAL_MS = 2000
@@ -251,7 +250,7 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
 
   return (
     <div className={className.join(' ')}>
-      <div>{msg.text}</div>
+      <MarkdownMessage content={msg.text} />
 
       {isPartial && (
         <div className="chat-meta">
@@ -271,25 +270,6 @@ function AssistantBubble({ msg, highlighted, onFeedback }) {
           {usedMemories.map((m) => (
             <span key={m.id} className="pill pill--green">
               {TASK_TYPE_LABEL[m.task_type] ?? m.task_type} · {m.display_text}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 操作状态行已隐藏，功能不受影响 */}
-      {false && (msg.tools ?? []).length > 0 && (
-        <div className="chat-meta">
-          <span className="chat-meta-label">操作：</span>
-          {msg.tools.map((tool, index) => (
-            <span
-              key={`${tool.tool_name}-${index}`}
-              className={
-                tool.status === TOOL_STATUS.SUCCESS
-                  ? 'pill pill--green'
-                  : 'pill pill--red'
-              }
-            >
-              {tool.summary}
             </span>
           ))}
         </div>
@@ -484,9 +464,9 @@ export default function ChatPage() {
   const userId = user?.id ?? 'anonymous'
   const timezone = user?.timezone ?? null
 
-  const [messages, setMessages] = useState([])
-  const [archivedMessages, setArchivedMessages] = useState([])
-  const [conversationId, setConversationId] = useState(null)
+  const [messages, setMessages] = useState(() => loadChatHistory(userId).messages ?? [])
+  const [archivedMessages, setArchivedMessages] = useState(() => loadChatHistory(userId).archivedMessages ?? [])
+  const [conversationId, setConversationId] = useState(() => loadChatHistory(userId).conversationId ?? null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [preparingImage, setPreparingImage] = useState(false)
@@ -528,18 +508,6 @@ export default function ChatPage() {
     previewUrlsRef.current.clear()
   }, [])
 
-  // 惰性恢复上次会话
-  useEffect(() => {
-    for (const url of previewUrlsRef.current) {
-      URL.revokeObjectURL(url)
-    }
-    previewUrlsRef.current.clear()
-    const stored = loadChatHistory(userId)
-    setMessages(stored.messages ?? [])
-    setArchivedMessages(stored.archivedMessages ?? [])
-    setConversationId(stored.conversationId ?? null)
-  }, [userId])
-
   // 持久化到本地
   useEffect(() => {
     if (messages.length || archivedMessages.length || conversationId) {
@@ -553,13 +521,13 @@ export default function ChatPage() {
 
   // 限流倒计时
   useEffect(() => {
-    if (rateCountdown == null) return
-    if (rateCountdown <= 0) {
-      setRateCountdown(null)
-      return
-    }
+    if (rateCountdown == null || rateCountdown <= 0) return
     rateTimerRef.current = setTimeout(() => {
-      setRateCountdown((prev) => (prev == null ? null : Math.max(0, prev - 1)))
+      setRateCountdown((prev) => {
+        if (prev == null) return null
+        const next = prev - 1
+        return next <= 0 ? null : next
+      })
     }, 1000)
     return () => clearTimeout(rateTimerRef.current)
   }, [rateCountdown])
@@ -832,7 +800,7 @@ export default function ChatPage() {
           onClick={() => setHistoryOpen(true)}
         >
           <History aria-hidden="true" />
-          历史记录
+          查找对话
         </button>
         <button
           type="button"

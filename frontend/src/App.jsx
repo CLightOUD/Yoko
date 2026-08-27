@@ -157,7 +157,7 @@ function MainApp() {
       <main className="app-main">
         {/* 保持所有页面挂载，仅用 display 控制显隐，避免切换 Tab 丢失状态 */}
         <div style={{ display: tab === 'chat' ? undefined : 'none' }}>
-          <ChatPage />
+          <ChatPage key={user?.id ?? 'anonymous'} />
         </div>
         <div style={{ display: tab === 'reminders' ? undefined : 'none' }}>
           <RemindersPage />

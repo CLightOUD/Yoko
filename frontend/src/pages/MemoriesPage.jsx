@@ -25,8 +25,25 @@ export default function MemoriesPage() {
   }, [])
 
   useEffect(() => {
-    load()
-  }, [load])
+    let cancelled = false
+    async function fetchData() {
+      setLoading(true)
+      setError('')
+      try {
+        const res = await listMemories({ active: true })
+        if (!cancelled) {
+          setItems(res.items)
+          setTotal(res.total)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message || '加载记忆失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    fetchData()
+    return () => { cancelled = true }
+  }, [])
 
   async function handleDisable(id) {
     try {
