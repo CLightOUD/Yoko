@@ -131,6 +131,38 @@ def test_candidate_retrieval_keeps_an_older_task_among_recent_unrelated_memories
     assert {item.task_type for item in candidates} == {"appointment", "other"}
 
 
+def test_candidate_retrieval_prioritizes_named_personal_fact(
+    database: Database,
+) -> None:
+    service = MemoryService(database)
+    person = service.upsert(
+        user_id="demo-user",
+        scope="task",
+        task_type="other",
+        memory_key="personal_fact:刘丁赫",
+        memory_value="用户的舍友",
+        display_text="刘丁赫是用户的舍友",
+        reason="用户明确要求记住人物关系",
+    ).memory
+    for index in range(15):
+        service.upsert(
+            user_id="demo-user",
+            scope="task",
+            task_type="other",
+            memory_key=f"recent_fact_{index}",
+            memory_value=f"value-{index}",
+            display_text=f"近期事实 {index}",
+            reason="测试无关近期记忆",
+        )
+
+    candidates = service.retrieve_candidates(
+        user_id="demo-user",
+        query_text="刘丁赫是我的什么人？",
+    )
+
+    assert person.id in {item.id for item in candidates}
+
+
 def test_manual_update_and_delete_are_logged_and_delete_is_idempotent(
     database: Database,
 ) -> None:

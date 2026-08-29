@@ -268,6 +268,7 @@ class ChatService:
         retrieval_started = perf_counter()
         memories = self.memory_service.retrieve_candidates(
             user_id=request.user_id,
+            query_text=request.message,
             limit=10,
         )
         retrieval_ms = max(0, round((perf_counter() - retrieval_started) * 1000))

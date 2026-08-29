@@ -114,7 +114,9 @@ class FakeAgent:
 
 
 @pytest.fixture
-def api_app(tmp_path: Path) -> FastAPI:
+def api_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    # API contract tests must not inherit a developer's real push configuration.
+    monkeypatch.setenv("PUSH_ENABLED", "false")
     agent = FakeAgent()
     app = create_app(
         database=Database(tmp_path / "api.db"),

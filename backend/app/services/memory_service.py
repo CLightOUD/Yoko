@@ -163,6 +163,7 @@ class MemoryService:
         self,
         *,
         user_id: str,
+        query_text: str | None = None,
         limit: int = 10,
     ) -> list[MemoryView]:
         """Return a bounded, task-diverse pool for model-side relevance decisions."""
@@ -177,11 +178,26 @@ class MemoryService:
         selected: list[dict] = []
         selected_ids: set[str] = set()
 
+        # Keep a named fact visible even when newer, unrelated memories fill the pool.
+        normalized_query = "".join((query_text or "").split())
+        for item in items:
+            key = item["memory_key"]
+            if not key.startswith("personal_fact:"):
+                continue
+            subject = key.removeprefix("personal_fact:")
+            if subject and subject in normalized_query and len(selected) < limit:
+                selected.append(item)
+                selected_ids.add(item["id"])
+
         # Reserve one slot for every task represented in the recent pool. This keeps
         # unrelated recent memories from completely hiding an older relevant task.
         for task_type in ("global", "medication", "walking", "appointment", "other"):
             item = next((row for row in items if row["task_type"] == task_type), None)
-            if item is not None and len(selected) < limit:
+            if (
+                item is not None
+                and item["id"] not in selected_ids
+                and len(selected) < limit
+            ):
                 selected.append(item)
                 selected_ids.add(item["id"])
         for item in items:

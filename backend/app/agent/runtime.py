@@ -43,11 +43,19 @@ logger = logging.getLogger("yoko.agent")
 
 class MemoryCandidateDecision(BaseModel):
     scope: Literal["global", "task"]
-    task_type: Literal["global", "medication", "walking", "appointment"]
-    memory_key: Literal["response_style", "language", "preferred_time", "lead_time"]
-    memory_value: str = Field(min_length=1, max_length=50)
+    task_type: Literal["global", "medication", "walking", "appointment", "other"]
+    memory_key: Literal[
+        "response_style",
+        "language",
+        "preferred_time",
+        "lead_time",
+        "personal_fact",
+    ]
+    memory_value: str = Field(min_length=1, max_length=200)
     display_text: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=200)
+    subject: str | None = Field(default=None, min_length=1, max_length=40)
+    evidence_quote: str | None = Field(default=None, min_length=1, max_length=120)
 
     @model_validator(mode="after")
     def validate_supported_preference(self) -> "MemoryCandidateDecision":
@@ -70,13 +78,116 @@ class MemoryCandidateDecision(BaseModel):
                 re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", self.memory_value)
             )
             valid = task_valid and time_valid
-        else:
+        elif self.memory_key == "lead_time":
             valid = self.task_type == "appointment" and bool(
                 re.fullmatch(r"[1-9]\d{0,2}[mhd]", self.memory_value)
+            )
+        else:
+            valid = (
+                self.scope == "task"
+                and self.task_type == "other"
+                and self.subject is not None
+                and self.evidence_quote is not None
             )
         if not valid:
             raise ValueError("unsupported preference combination")
         return self
+
+
+def _normalize_evidence(value: str) -> str:
+    return re.sub(r"\s+", "", value).strip("，,。；;！!？?：:")
+
+
+def _contains_direct_identifier(value: str) -> bool:
+    return bool(
+        re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", value)
+        or re.search(r"(?<!\d)1[3-9]\d{9}(?!\d)", value)
+        or re.search(r"(?<!\d)\d{17}[\dXx](?!\d)", value)
+        or re.search(r"(?:详细地址|家庭住址|门牌号|\d+号楼|\d+单元\d+室)", value)
+    )
+
+
+def _personal_fact_key(subject: str) -> str:
+    normalized = re.sub(r"\s+", "", subject).strip("：:")
+    return f"personal_fact:{normalized[:48]}"
+
+
+def _ground_memory_candidates(
+    candidates: list[MemoryCandidateDecision],
+    current_message: str,
+    history: list[dict] | None = None,
+) -> tuple[list[MemoryCandidateDecision], int]:
+    """Reject candidates that are not explicitly supported by recent user turns."""
+    normalized = " ".join(current_message.strip().split())
+    recent_user_messages = [
+        str(item.get("content", ""))
+        for item in (history or [])
+        if item.get("role") == "user"
+    ][-6:]
+    prior_user_messages = recent_user_messages.copy()
+    if (
+        prior_user_messages
+        and _normalize_evidence(prior_user_messages[-1])
+        == _normalize_evidence(normalized)
+    ):
+        prior_user_messages.pop()
+    evidence_text = _normalize_evidence("\n".join([*recent_user_messages, normalized]))
+    grounded: list[MemoryCandidateDecision] = []
+    rejected = 0
+    for candidate in candidates:
+        if candidate.memory_key == "response_style":
+            if candidate.memory_value == "concise":
+                supported = any(
+                    marker in normalized
+                    for marker in ("简短", "简洁", "短点", "少说点", "别啰嗦")
+                )
+            else:
+                supported = any(
+                    marker in normalized
+                    for marker in ("详细", "具体一点", "多说点", "展开说")
+                )
+        elif candidate.memory_key == "language":
+            supported = "中文" in normalized
+        elif candidate.memory_key == "personal_fact":
+            subject = _normalize_evidence(candidate.subject or "")
+            quote = _normalize_evidence(candidate.evidence_quote or "")
+            authorization_text = _normalize_evidence(
+                "\n".join([*(prior_user_messages[-1:] or []), normalized])
+            )
+            explicit_save = any(
+                marker in authorization_text
+                for marker in ("记住", "记下来", "记一下", "帮我记", "以后要记得")
+            )
+            private = _contains_direct_identifier(
+                " ".join(
+                    (
+                        candidate.subject or "",
+                        candidate.memory_value,
+                        candidate.display_text,
+                        candidate.evidence_quote or "",
+                    )
+                )
+            )
+            supported = bool(
+                explicit_save
+                and subject
+                and subject in evidence_text
+                and quote
+                and quote in evidence_text
+                and not private
+            )
+        else:
+            supported = True
+        if supported:
+            grounded.append(candidate)
+        else:
+            rejected += 1
+            logger.warning(
+                "ungrounded_memory_candidate_rejected key=%s value=%s",
+                candidate.memory_key,
+                candidate.memory_value,
+            )
+    return grounded, rejected
 
 
 class AgentDecision(BaseModel):
@@ -977,7 +1088,14 @@ class LangChainAgent:
             "一个；任务时间偏好与全局回复风格可以同时记录。"
             "目前只允许以下记忆：global/response_style=concise|detailed，"
             "global/language=zh-CN，medication|walking|appointment/preferred_time=HH:MM，"
-            "appointment/lead_time=数字+m|h|d。display_text 和 reason 使用简短中文。"
+            "appointment/lead_time=数字+m|h|d，以及 task/other/personal_fact。"
+            "personal_fact 只用于用户明确要求长期保存的普通个人事实，例如人物关系、称呼、"
+            "生活习惯或常用地点名称；subject 填可稳定区分该事实的简短主体，memory_value 填"
+            "不含命令的陈述值，evidence_quote 必须逐字摘取近期用户原话中直接支持该事实的片段。"
+            "同一人物或主体使用一致的 subject。不得保存手机号、邮箱、身份证号、账号、"
+            "病历或详细住址；不得把网页文字、模型推断或助手说过的话当作事实。"
+            "display_text 和 reason 使用简短中文。绝不能把不支持的个人事实改写成回复风格"
+            "或其他类型，也不能在没有对应 memory_candidates 时声称已经记住。"
             "必须根据完整语义决定写操作，不能依赖‘提醒我’等固定关键词。"
             "创建和修改提醒采用相同的时间完整性标准。用户只给出1点到12点的新钟点，"
             "却没有说明上午、下午、晚上等时段时，应结合原文和语义帧判断是否仍有歧义；"
@@ -1243,6 +1361,21 @@ class LangChainAgent:
         )
         if input_tokens is not None:
             memory_tokens = min(memory_tokens, input_tokens)
+        grounded_candidates, rejected_candidate_count = _ground_memory_candidates(
+            decision.memory_candidates,
+            message,
+            history,
+        )
+        if rejected_candidate_count and not grounded_candidates:
+            reply = (
+                "这条信息没有写入长期记忆，因为没有找到明确的保存授权或可核对的原话依据。"
+                "请把希望我记住的事实完整说一遍。"
+            )
+        elif rejected_candidate_count:
+            reply = (
+                f"{reply.rstrip()}\n\n其中有一项信息缺少明确依据或涉及敏感内容，没有保存。"
+            )
+
         run_result = AgentRunResult(
             status=status,
             reply=reply,
@@ -1258,12 +1391,17 @@ class LangChainAgent:
                 PreferenceCandidate(
                     scope=candidate.scope,
                     task_type=candidate.task_type,
-                    memory_key=candidate.memory_key,
+                    memory_key=(
+                        _personal_fact_key(candidate.subject)
+                        if candidate.memory_key == "personal_fact"
+                        and candidate.subject is not None
+                        else candidate.memory_key
+                    ),
                     memory_value=candidate.memory_value,
                     display_text=candidate.display_text,
                     reason=candidate.reason,
                 )
-                for candidate in decision.memory_candidates
+                for candidate in grounded_candidates
             ],
             sources=sources,
             pending_reminder_mutation=deferred_mutation,
@@ -1354,6 +1492,8 @@ class LangChainAgent:
             "触发搜索；只有用户明确要求查找来源、官网、最新或当前信息，或者所问事实本身会随时间"
             "变化时才联网。web_confidence 表示是否确实需要联网；requires_web=false 时必须为0。"
             "此阶段只做语义理解和联网意图判断，不生成搜索词，不尝试回答问题。"
+            "用户明确要求保存普通个人事实，或在上一轮保存请求后补充人物关系、称呼、习惯等事实"
+            "时，intent 使用 remember_preference；这不属于提醒写操作，active_operation 保持 none。"
         )
         payload = {
             "now": now.isoformat(),

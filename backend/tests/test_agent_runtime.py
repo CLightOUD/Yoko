@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from backend.app.agent import AgentRunResult, LangChainAgent, PendingReminderMutation
 from backend.app.agent.runtime import (
+    MemoryCandidateDecision,
     MutationSafetyMiddleware,
     SearchPlan,
     SearchPlanResult,
@@ -15,6 +16,8 @@ from backend.app.agent.runtime import (
     SemanticPreprocessResult,
     WebEvidenceDecision,
     WebEvidenceSelectionResult,
+    _ground_memory_candidates,
+    _personal_fact_key,
 )
 from backend.app.database import Database
 from backend.app.schemas import ReminderCreateRequest, ReminderListQuery, ToolCallView
@@ -30,6 +33,93 @@ from backend.app.services.web_search_service import (
 ORIGINAL_PREPROCESS_SEMANTICS = LangChainAgent._preprocess_semantics
 ORIGINAL_PLAN_WEB_SEARCH = LangChainAgent._plan_web_search
 ORIGINAL_SELECT_WEB_EVIDENCE = LangChainAgent._select_web_evidence
+
+
+def test_rejects_ungrounded_response_style_memory() -> None:
+    candidate = MemoryCandidateDecision(
+        scope="global",
+        task_type="global",
+        memory_key="response_style",
+        memory_value="concise",
+        display_text="回答风格偏好为简短清晰",
+        reason="用户要求记住",
+    )
+
+    grounded, rejected = _ground_memory_candidates(
+        [candidate],
+        "他是我的舍友",
+    )
+
+    assert grounded == []
+    assert rejected == 1
+
+
+def test_accepts_explicit_response_style_memory() -> None:
+    candidate = MemoryCandidateDecision(
+        scope="global",
+        task_type="global",
+        memory_key="response_style",
+        memory_value="concise",
+        display_text="回答风格偏好为简短清晰",
+        reason="用户明确表达长期偏好",
+    )
+
+    grounded, rejected = _ground_memory_candidates(
+        [candidate],
+        "记住，以后回答简洁一点",
+    )
+
+    assert grounded == [candidate]
+    assert rejected == 0
+
+
+def test_accepts_personal_fact_supported_across_recent_turns() -> None:
+    candidate = MemoryCandidateDecision(
+        scope="task",
+        task_type="other",
+        memory_key="personal_fact",
+        memory_value="用户的舍友",
+        display_text="刘丁赫是用户的舍友",
+        reason="用户明确要求记住人物关系",
+        subject="刘丁赫",
+        evidence_quote="他是我的舍友",
+    )
+    history = [
+        {"role": "user", "content": "你认识刘丁赫吗"},
+        {"role": "assistant", "content": "我不认识，您可以告诉我。"},
+        {"role": "user", "content": "记住他"},
+    ]
+
+    grounded, rejected = _ground_memory_candidates(
+        [candidate],
+        "他是我的舍友",
+        history,
+    )
+
+    assert grounded == [candidate]
+    assert rejected == 0
+    assert _personal_fact_key(candidate.subject or "") == "personal_fact:刘丁赫"
+
+
+def test_rejects_sensitive_personal_fact() -> None:
+    candidate = MemoryCandidateDecision(
+        scope="task",
+        task_type="other",
+        memory_key="personal_fact",
+        memory_value="手机号是13800138000",
+        display_text="刘丁赫的手机号",
+        reason="用户要求记住",
+        subject="刘丁赫手机号",
+        evidence_quote="刘丁赫的手机号是13800138000",
+    )
+
+    grounded, rejected = _ground_memory_candidates(
+        [candidate],
+        "记住，刘丁赫的手机号是13800138000",
+    )
+
+    assert grounded == []
+    assert rejected == 1
 
 
 def _pending_test_result(mutation: PendingReminderMutation) -> AgentRunResult:
@@ -1893,6 +1983,67 @@ def test_model_can_extract_long_term_preference_from_typo_without_tool_call(
         (candidate.task_type, candidate.memory_key, candidate.memory_value)
         for candidate in result.memory_candidates
     ] == [("medication", "preferred_time", "19:00")]
+
+
+def test_model_can_store_personal_fact_with_subject_key(
+    monkeypatch, tmp_path
+) -> None:
+    message = "他是我的舍友"
+    history = [
+        {"role": "user", "content": "你认识刘丁赫吗"},
+        {"role": "assistant", "content": "我不认识这个人。"},
+        {"role": "user", "content": "记住他"},
+        {"role": "assistant", "content": "请告诉我希望记住的信息。"},
+        {"role": "user", "content": message},
+    ]
+
+    class PersonalFactGraph:
+        def invoke(self, state):
+            assert state["messages"][-1].content == f"[U3] {message}"
+            return {
+                "messages": [*state["messages"], AIMessage(content="")],
+                "structured_response": {
+                    "status": "completed",
+                    "reply": "好的，我记住了：刘丁赫是您的舍友。",
+                    "used_memory_ids": [],
+                    "memory_candidates": [
+                        {
+                            "scope": "task",
+                            "task_type": "other",
+                            "memory_key": "personal_fact",
+                            "memory_value": "用户的舍友",
+                            "display_text": "刘丁赫是用户的舍友",
+                            "reason": "用户明确要求记住人物关系",
+                            "subject": "刘丁赫",
+                            "evidence_quote": "他是我的舍友",
+                        }
+                    ],
+                },
+            }
+
+    database = Database(tmp_path / "personal-fact.db")
+    database.initialize()
+    monkeypatch.setattr(LangChainAgent, "_build_model", staticmethod(lambda: object()))
+    monkeypatch.setattr(
+        "backend.app.agent.runtime.create_agent",
+        lambda **kwargs: PersonalFactGraph(),
+    )
+
+    result = LangChainAgent().run(
+        user_id="demo-user",
+        message=message,
+        timezone="Asia/Shanghai",
+        now=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+        memories=[],
+        history=history,
+        reminder_service=ReminderService(database),
+    )
+
+    assert len(result.memory_candidates) == 1
+    candidate = result.memory_candidates[0]
+    assert candidate.task_type == "other"
+    assert candidate.memory_key == "personal_fact:刘丁赫"
+    assert candidate.memory_value == "用户的舍友"
 
 
 def test_memory_backed_reminder_is_created_only_after_model_tool_call(

@@ -273,6 +273,8 @@ task_type: global | medication | walking | appointment | other
 
 同一用户的 `task_type + memory_key` 只允许存在一个有效值。新反馈覆盖旧偏好时更新原记录，并写入 `memory_events`。
 
+普通个人事实使用 `scope=task`、`task_type=other`，键名格式为 `personal_fact:<主体>`，例如 `personal_fact:刘丁赫`。主体相同的新事实更新原记录，不同主体分别保存。此类记忆只接受用户明确要求保存、且能引用近期用户原话作为证据的内容；手机号、邮箱、身份证号、账号、病历和详细住址不得自动写入。
+
 | 字段 | 类型 | 可空 | 说明 |
 | --- | --- | --- | --- |
 | `id` | UUID 字符串 | 否 | 记忆 ID |
@@ -754,6 +756,8 @@ metrics: RequestMetrics
 Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
 用户也可能直接在聊天框输入“以后都在晚上7点提醒”等反馈。语义预处理阶段只生成 `SemanticFrame`，不写记忆；主 Agent 在自己的结构化结果中返回经过语义理解的记忆候选，`/api/chat` 校验并写入后，通过 `memory_changes` 返回与 `/api/feedback` 相同的 `MemoryChange` 对象。普通任务、临时状态和不明确偏好返回空数组。
+
+用户明确要求保存人物关系、称呼、生活习惯或常用地点名称时，主 Agent 可以返回 `personal_fact` 候选。候选必须包含稳定主体和逐字取自近期用户消息的证据片段；后端校验证据、紧邻的保存授权和敏感信息后，再转换成 `personal_fact:<主体>` 落库。查询文本直接包含主体时，该事实会优先进入有限的候选记忆池，最终是否采用仍由主 Agent 根据当前问题判断。
 
 每次 `/api/chat` 都先由独立的结构化模型调用结合最近历史和候选记忆生成 `SemanticFrame`，再由主 LangChain Agent 同时阅读用户原文、历史、候选记忆和语义帧。用户原文是最终事实来源，语义帧不得覆盖原文。即使消息包含明确日期或存在 `preferred_time`，也只有主 Agent 实际调用 `create_reminder` 形成计划，且最终决定通过语义一致性门禁后才能写入；不得通过关键词或正则直接调用 `ReminderService`。
 

@@ -39,6 +39,7 @@ import {
   stripTransientImageData,
 } from '../chatStorage.js'
 import MarkdownMessage from '../components/MarkdownMessage.jsx'
+import { validateImageFile, fileToBase64, fileToPreviewUrl } from '../utils/imageUtils.js'
 
 let idCounter = 0
 const CHAT_STATUS_POLL_INTERVAL_MS = 2000

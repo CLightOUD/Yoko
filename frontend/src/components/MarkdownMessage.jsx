@@ -1,13 +1,12 @@
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-const DANGEROUS_PROTOCOLS = /^(javascript|data|vbscript):/i
+const SAFE_LINK = /^(https?:\/\/|\/(?!\/)|#)/i
 
 function safeUrl(url) {
   if (!url) return undefined
   const trimmed = String(url).trim()
-  if (DANGEROUS_PROTOCOLS.test(trimmed)) return undefined
-  return trimmed
+  return SAFE_LINK.test(trimmed) ? trimmed : undefined
 }
 
 function MarkdownMessage({ content }) {
@@ -60,16 +59,11 @@ function MarkdownMessage({ content }) {
               </div>
             )
           },
+          pre({ children, ...props }) {
+            return <pre className="md-code-block" {...props}>{children}</pre>
+          },
           code({ className, children, ...props }) {
-            const isInline = !className
-            if (isInline) {
-              return <code className="md-code-inline" {...props}>{children}</code>
-            }
-            return (
-              <pre className="md-code-block">
-                <code className={className} {...props}>{children}</code>
-              </pre>
-            )
+            return <code className={className} {...props}>{children}</code>
           },
           blockquote({ children, ...props }) {
             return <blockquote className="md-blockquote" {...props}>{children}</blockquote>

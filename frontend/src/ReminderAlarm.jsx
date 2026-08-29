@@ -3,7 +3,7 @@ import { Bell } from 'lucide-react'
 import { acknowledgeReminder, listDueReminders } from './api/client'
 import { REPEAT_TYPE_LABEL } from './api/constants'
 import { formatFullDateTime } from './api/format'
-import { playAlarm, unlockAudio } from './alarm'
+import { playAlarm, stopAlarm, unlockAudio } from './alarm'
 import { ensurePushSubscription } from './pushNotifications'
 
 // 到期提醒轮询周期（规范建议 20–30 秒）
@@ -120,6 +120,7 @@ export default function ReminderAlarm() {
     window.addEventListener('focus', onFocus)
 
     return () => {
+      stopAlarm()
       clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
       window.removeEventListener('focus', onFocus)
@@ -132,6 +133,8 @@ export default function ReminderAlarm() {
     if (!alarm || acknowledging) return
     const target = alarm
     const key = keyOf(target)
+    // 用户已响应时立即静音，不等待网络确认完成。
+    stopAlarm()
     setAcknowledging(true)
     setAckError('')
     try {

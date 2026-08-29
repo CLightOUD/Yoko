@@ -1209,7 +1209,7 @@
   border-radius: 0 var(--radius) var(--radius) 0;
 }
 
-.markdown-body .md-code-inline {
+.markdown-body code {
   padding: 0.15em 0.4em;
   font-size: 0.9em;
   background: var(--color-primary-soft);
