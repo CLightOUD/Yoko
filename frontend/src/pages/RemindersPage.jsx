@@ -222,6 +222,8 @@ export default function RemindersPage() {
   const [items, setItems] = useState([])
   const [filter, setFilter] = useState(REMINDER_LIST_STATUS.ACTIVE)
   const [editingId, setEditingId] = useState(null)
+  const [pendingDeletion, setPendingDeletion] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -259,14 +261,18 @@ export default function RemindersPage() {
   // “全部”会包含已删除项，展示时隐藏，避免用户看到删除的提醒。
   const visible = items.filter((r) => r.status !== REMINDER_STATUS.DELETED)
 
-  async function handleDelete(id, title) {
-    const confirmed = window.confirm(`确定要删除“${title}”这个提醒吗？`)
-    if (!confirmed) return
+  async function confirmDelete() {
+    if (!pendingDeletion || deletingId) return
+    const { id } = pendingDeletion
+    setDeletingId(id)
     try {
       await deleteReminder(id)
-      load()
+      setPendingDeletion(null)
+      await load()
     } catch (err) {
       setError(err.message || '删除失败，请重试')
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -361,7 +367,10 @@ export default function RemindersPage() {
                     <button
                       className="btn btn--danger btn--small"
                       type="button"
-                      onClick={() => handleDelete(reminder.id, reminder.title)}
+                      onClick={() => setPendingDeletion({
+                        id: reminder.id,
+                        title: reminder.title,
+                      })}
                     >
                       <Trash2 aria-hidden="true" />
                       删除
@@ -371,6 +380,50 @@ export default function RemindersPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {pendingDeletion && (
+        <div
+          className="confirm-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !deletingId) {
+              setPendingDeletion(null)
+            }
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-reminder-title"
+            aria-describedby="delete-reminder-description"
+          >
+            <h2 id="delete-reminder-title" className="section-title">确认删除提醒</h2>
+            <p id="delete-reminder-description">
+              确定要删除“{pendingDeletion.title}”这个提醒吗？删除后将不再提醒。
+            </p>
+            <div className="btn-row confirm-dialog__actions">
+              <button
+                className="btn btn--secondary"
+                type="button"
+                onClick={() => setPendingDeletion(null)}
+                disabled={Boolean(deletingId)}
+                autoFocus
+              >
+                取消
+              </button>
+              <button
+                className="btn btn--danger"
+                type="button"
+                onClick={confirmDelete}
+                disabled={Boolean(deletingId)}
+              >
+                {deletingId ? '正在删除…' : '确认删除'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

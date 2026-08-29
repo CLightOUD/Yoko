@@ -321,6 +321,13 @@ def test_chat_response_matches_memory_metrics_and_tool_status() -> None:
         snippet="公开政策摘要",
     )
     assert source.source == "bing"
+    alternative_source = schemas.WebSource(
+        title="玩家评价",
+        url="https://example.com/review",
+        snippet="公开评价摘要",
+        source="duckduckgo",
+    )
+    assert alternative_source.source == "duckduckgo"
 
     with pytest.raises(ValidationError, match="partial responses"):
         schemas.ChatResponse(

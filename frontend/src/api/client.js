@@ -6,9 +6,7 @@ import {
   REPEAT_TYPE,
 } from './constants'
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ??
-  (import.meta.env.DEV ? 'http://127.0.0.1:8000' : '')
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const REQUEST_TIMEOUT_MS = 30000
 
@@ -309,7 +307,7 @@ export function updateMemory(id, fields) {
   })
 }
 
-// 删除记忆（软删除）
+// 永久删除记忆
 export function deleteMemory(id) {
   return request(`/api/memories/${id}`, {
     method: 'DELETE',

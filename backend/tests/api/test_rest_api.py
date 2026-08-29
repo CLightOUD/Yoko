@@ -490,6 +490,24 @@ def test_memory_patch_and_delete_routes(client) -> None:
     assert updated.status_code == 200
     assert updated.json()["display_text"] == "默认使用简短回答"
 
+    disabled = client.patch(
+        f"/api/memories/{memory_id}",
+        json={"active": False},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["active"] is False
+    assert client.get("/api/memories").json()["total"] == 0
+    assert client.get(
+        "/api/memories", params={"active": "false"}
+    ).json()["total"] == 1
+
+    enabled = client.patch(
+        f"/api/memories/{memory_id}",
+        json={"active": True},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["active"] is True
+
     deleted = client.delete(
         f"/api/memories/{memory_id}", params={"user_id": "demo-user"}
     )
@@ -498,4 +516,5 @@ def test_memory_patch_and_delete_routes(client) -> None:
         "/api/memories",
         params={"user_id": "demo-user", "active": "false"},
     )
-    assert inactive.json()["total"] == 1
+    assert inactive.json()["total"] == 0
+    assert client.delete(f"/api/memories/{memory_id}").status_code == 404

@@ -219,6 +219,20 @@ class MemoryRepository(BaseRepository):
             )
         return cursor.rowcount
 
+    def delete(
+        self,
+        *,
+        memory_id: str,
+        user_id: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        with self._connection(connection, write=True) as active_connection:
+            cursor = active_connection.execute(
+                "DELETE FROM memories WHERE id = ? AND user_id = ?",
+                (memory_id, user_id),
+            )
+        return cursor.rowcount > 0
+
     @staticmethod
     def _convert_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         result = row_to_dict(row)
@@ -265,6 +279,20 @@ class MemoryEventRepository(BaseRepository):
                 "SELECT * FROM memory_events WHERE id = ?", (event_id,)
             ).fetchone()
         return dict(row)
+
+    def delete_for_memory(
+        self,
+        *,
+        memory_id: str,
+        user_id: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        with self._connection(connection, write=True) as active_connection:
+            cursor = active_connection.execute(
+                "DELETE FROM memory_events WHERE memory_id = ? AND user_id = ?",
+                (memory_id, user_id),
+            )
+        return cursor.rowcount
 
     def list_for_memory(
         self,

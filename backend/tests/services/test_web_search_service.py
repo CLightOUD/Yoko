@@ -65,6 +65,46 @@ def test_bing_search_parses_deduplicates_and_caches_results() -> None:
     assert len(second.results) == 1
 
 
+def test_duckduckgo_search_unwraps_redirects_and_caches_results() -> None:
+    calls = 0
+    target = "https://www.taptap.cn/app/168332/review?utm_source=search"
+    redirect = (
+        "//duckduckgo.com/l/?uddg="
+        f"{quote(target, safe='')}&amp;rut=ignored"
+    )
+    html = f"""
+    <html><body>
+      <div class="result">
+        <a class="result__a" href="{redirect}">原神 - 玩家评价 - TapTap</a>
+        <a class="result__snippet" href="{redirect}">玩家讨论游戏的优点和不足。</a>
+      </div>
+    </body></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == "html.duckduckgo.com"
+        assert request.url.params["q"] == "原神 玩家评价 口碑"
+        return httpx.Response(200, text=html, request=request)
+
+    service = WebSearchService(
+        client=_client(handler),
+        cache_ttl_seconds=60,
+        minimum_interval_seconds=0,
+    )
+    first = service.search_alternative("原神 玩家评价 口碑")
+    second = service.search_alternative("原神 玩家评价 口碑")
+
+    assert calls == 1
+    assert first.error is None
+    assert first.source == "duckduckgo"
+    assert first.results[0].source == "duckduckgo"
+    assert first.results[0].url == "https://www.taptap.cn/app/168332/review"
+    assert first.results[0].snippet == "玩家讨论游戏的优点和不足。"
+    assert second.cached is True
+
+
 def test_search_cache_can_expand_after_an_initial_smaller_result_limit() -> None:
     calls = 0
     html = """

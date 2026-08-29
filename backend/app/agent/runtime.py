@@ -551,9 +551,21 @@ class LangChainAgent:
             search_response = None
             selection = None
             standalone_question = search_plan.standalone_question
-            for attempt in range(2):
+            accumulated_results: list[WebSearchResult] = []
+            seen_result_urls: set[str] = set()
+            for attempt in range(3):
                 search_started = perf_counter()
-                search_response = self.web_search_service.search(
+                alternative_search = getattr(
+                    self.web_search_service,
+                    "search_alternative",
+                    None,
+                )
+                search_method = (
+                    alternative_search
+                    if attempt >= 1 and callable(alternative_search)
+                    else self.web_search_service.search
+                )
+                search_response = search_method(
                     current_query,
                     max_results=5,
                 )
@@ -598,6 +610,12 @@ class LangChainAgent:
                     )
                     for item in enriched_results
                 )
+                for item in enriched_results:
+                    normalized_url = item.url.casefold()
+                    if normalized_url in seen_result_urls:
+                        continue
+                    seen_result_urls.add(normalized_url)
+                    accumulated_results.append(item)
                 search_ms += max(
                     0,
                     round((perf_counter() - page_started) * 1000),
@@ -607,22 +625,25 @@ class LangChainAgent:
                     question=standalone_question,
                     query=search_response.query,
                     required_evidence=search_plan.required_evidence,
-                    results=enriched_results,
+                    results=tuple(accumulated_results),
                 )
                 web_model_messages.extend(selection.model_messages)
                 web_model_ms += selection.model_ms
                 if selection.results:
                     break
                 planned_fallback = (search_plan.fallback_query or "").strip()
-                retry_query = (
-                    planned_fallback
-                    if attempt == 0
-                    and planned_fallback
-                    and planned_fallback.casefold()
-                    != search_response.query.casefold()
-                    else (selection.decision.retry_query or "").strip()
+                evidence_retry = (selection.decision.retry_query or "").strip()
+                retry_query = next(
+                    (
+                        candidate
+                        for candidate in (evidence_retry, planned_fallback)
+                        if candidate
+                        and candidate.casefold()
+                        != search_response.query.casefold()
+                    ),
+                    "",
                 )
-                if attempt == 0 and retry_query and retry_query.casefold() != (
+                if attempt < 2 and retry_query and retry_query.casefold() != (
                     search_response.query.casefold()
                 ):
                     current_query = retry_query
@@ -636,6 +657,7 @@ class LangChainAgent:
                         title=item.title,
                         url=item.url,
                         snippet=item.snippet[:500],
+                        source=item.source,
                     )
                     for item in selection.results
                 ]
@@ -661,13 +683,17 @@ class LangChainAgent:
                     ensure_ascii=False,
                 )
                 cache_note = "（缓存）" if search_response.cached else ""
+                search_label = {
+                    "bing": "必应",
+                    "duckduckgo": "DuckDuckGo",
+                }[search_response.source]
                 tool_calls.append(
                     ToolCallView(
                         tool_name="web_search",
                         status="success",
                         summary=(
-                            f"已查询必应{cache_note}：{search_response.query}；"
-                            f"尝试 {search_attempts} 次，原始 {len(search_response.results)} 条，"
+                            f"已查询{search_label}{cache_note}：{search_response.query}；"
+                            f"尝试 {search_attempts} 次，候选 {len(accumulated_results)} 条，"
                             f"保留相关证据 {len(sources)} 条"
                         ),
                         latency_ms=search_ms,
@@ -1491,6 +1517,9 @@ class LangChainAgent:
             "稳定概览时也必须为 false，不能仅因消息含有专有名称，或因为联网可能让回答更准确就"
             "触发搜索；只有用户明确要求查找来源、官网、最新或当前信息，或者所问事实本身会随时间"
             "变化时才联网。web_confidence 表示是否确实需要联网；requires_web=false 时必须为0。"
+            "用户询问网络、媒体、消费者、玩家或公众对某个对象的评价、口碑、评论倾向、"
+            "优缺点争议等外部群体观点时，答案依赖可核验的外部评价材料，requires_web 必须为 true；"
+            "这不同于只询问对象本身的稳定介绍。"
             "此阶段只做语义理解和联网意图判断，不生成搜索词，不尝试回答问题。"
             "用户明确要求保存普通个人事实，或在上一轮保存请求后补充人物关系、称呼、习惯等事实"
             "时，intent 使用 remember_preference；这不属于提醒写操作，active_operation 保持 none。"

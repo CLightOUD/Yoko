@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from threading import Lock
 from time import monotonic, sleep
+from typing import Literal
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
@@ -22,6 +23,7 @@ class WebSearchResult:
     url: str
     snippet: str
     content: str = ""
+    source: Literal["bing", "duckduckgo"] = "bing"
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,7 @@ class WebSearchResponse:
     results: tuple[WebSearchResult, ...]
     cached: bool = False
     error: str | None = None
+    source: Literal["bing", "duckduckgo"] = "bing"
 
 
 class _PageTooLargeError(ValueError):
@@ -163,6 +166,85 @@ class _BingResultsParser(HTMLParser):
         self._paragraph_depth = 0
 
 
+class _DuckDuckGoResultsParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[WebSearchResult] = []
+        self._current: dict[str, object] | None = None
+        self._title_depth = 0
+        self._snippet_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag != "a":
+            return
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if "result__a" in classes:
+            self._finish_result()
+            self._current = {
+                "title": [],
+                "url": attributes.get("href") or "",
+                "snippet": [],
+            }
+            self._title_depth = 1
+        elif self._current is not None and "result__snippet" in classes:
+            self._snippet_depth = 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a":
+            return
+        if self._title_depth:
+            self._title_depth = 0
+        elif self._snippet_depth:
+            self._snippet_depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None:
+            return
+        text = _collapse_whitespace(data)
+        if not text:
+            return
+        if self._title_depth:
+            title = self._current["title"]
+            assert isinstance(title, list)
+            title.append(text)
+        elif self._snippet_depth:
+            snippet = self._current["snippet"]
+            assert isinstance(snippet, list)
+            snippet.append(text)
+
+    def close(self) -> None:
+        super().close()
+        self._finish_result()
+
+    def _finish_result(self) -> None:
+        if self._current is None:
+            return
+        title_parts = self._current["title"]
+        snippet_parts = self._current["snippet"]
+        assert isinstance(title_parts, list)
+        assert isinstance(snippet_parts, list)
+        title = _collapse_whitespace(" ".join(title_parts))
+        snippet = _collapse_whitespace(" ".join(snippet_parts))
+        url = _normalize_result_url(str(self._current["url"]))
+        if title and url:
+            self.results.append(
+                WebSearchResult(
+                    title=title[:200],
+                    url=url[:2048],
+                    snippet=snippet[:500],
+                    source="duckduckgo",
+                )
+            )
+        self._current = None
+        self._title_depth = 0
+        self._snippet_depth = 0
+
+
 class _ReadableTextParser(HTMLParser):
     _SKIPPED_TAGS = frozenset(
         {"script", "style", "noscript", "svg", "template", "canvas"}
@@ -232,6 +314,7 @@ class _ReadableTextParser(HTMLParser):
 
 class WebSearchService:
     SEARCH_URL = "https://www.bing.com/search"
+    ALTERNATIVE_SEARCH_URL = "https://html.duckduckgo.com/html/"
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -329,6 +412,69 @@ class WebSearchService:
                 self._cache.popitem(last=False)
         return WebSearchResponse(query=safe_query, results=results[:limit])
 
+    def search_alternative(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> WebSearchResponse:
+        safe_query = _sanitize_query(query)
+        if not safe_query:
+            return WebSearchResponse(
+                query="",
+                results=(),
+                error="搜索词为空或只包含了被移除的敏感信息",
+                source="duckduckgo",
+            )
+        limit = min(max(1, max_results), 5)
+        cache_key = f"duckduckgo:{safe_query.casefold()}"
+        cached = self._get_cached(cache_key, limit)
+        if cached is not None:
+            return WebSearchResponse(
+                query=safe_query,
+                results=cached,
+                cached=True,
+                source="duckduckgo",
+            )
+
+        self._wait_for_rate_limit()
+        try:
+            response = self._alternative_request(safe_query)
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            error = "DuckDuckGo 搜索超时"
+        except httpx.HTTPStatusError as exc:
+            error = f"DuckDuckGo 搜索返回 HTTP {exc.response.status_code}"
+        except httpx.HTTPError as exc:
+            error = f"DuckDuckGo 搜索连接失败：{type(exc).__name__}"
+        else:
+            lowered = response.text.casefold()
+            if "anomaly-modal" in lowered or "challenge-form" in lowered:
+                error = "DuckDuckGo 要求完成人机验证"
+            else:
+                parser = _DuckDuckGoResultsParser()
+                parser.feed(response.text)
+                parser.close()
+                results = tuple(_deduplicate(parser.results)[:5])
+                if results:
+                    with self._lock:
+                        self._cache[cache_key] = (monotonic(), results)
+                        self._cache.move_to_end(cache_key)
+                        while len(self._cache) > self._search_cache_max_entries:
+                            self._cache.popitem(last=False)
+                    return WebSearchResponse(
+                        query=safe_query,
+                        results=results[:limit],
+                        source="duckduckgo",
+                    )
+                error = "DuckDuckGo 没有返回可解析的搜索结果"
+        return WebSearchResponse(
+            query=safe_query,
+            results=(),
+            error=error,
+            source="duckduckgo",
+        )
+
     def _request(self, query: str) -> httpx.Response:
         parameters = {
             "q": query,
@@ -356,6 +502,28 @@ class WebSearchService:
                 timeout=5,
             )
 
+    def _alternative_request(self, query: str) -> httpx.Response:
+        parameters = {"q": query}
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+        }
+        if self._client is not None:
+            return self._client.get(
+                self.ALTERNATIVE_SEARCH_URL,
+                params=parameters,
+                headers=headers,
+                timeout=10,
+            )
+        with httpx.Client(follow_redirects=True) as client:
+            return client.get(
+                self.ALTERNATIVE_SEARCH_URL,
+                params=parameters,
+                headers=headers,
+                timeout=10,
+            )
+
     def fetch_pages(
         self,
         results: tuple[WebSearchResult, ...],
@@ -372,6 +540,7 @@ class WebSearchService:
                     url=result.url,
                     snippet=result.snippet,
                     content=content,
+                    source=result.source,
                 )
             )
         return tuple(enriched)
@@ -610,6 +779,8 @@ def _sanitize_query(value: str) -> str:
 
 
 def _normalize_result_url(value: str) -> str:
+    if value.startswith("//"):
+        value = f"https:{value}"
     try:
         parsed = urlparse(value)
     except ValueError:
@@ -624,6 +795,16 @@ def _normalize_result_url(value: str) -> str:
         decoded = _decode_bing_target(encoded)
         if decoded:
             parsed = urlparse(decoded)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                return ""
+
+    if (
+        parsed.hostname.casefold().endswith("duckduckgo.com")
+        and parsed.path == "/l/"
+    ):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            parsed = urlparse(target)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
                 return ""
 

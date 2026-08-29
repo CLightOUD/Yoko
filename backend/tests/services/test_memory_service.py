@@ -163,7 +163,7 @@ def test_candidate_retrieval_prioritizes_named_personal_fact(
     assert person.id in {item.id for item in candidates}
 
 
-def test_manual_update_and_delete_are_logged_and_delete_is_idempotent(
+def test_manual_update_is_logged_and_delete_permanently_removes_memory(
     database: Database,
 ) -> None:
     service = MemoryService(database)
@@ -187,18 +187,15 @@ def test_manual_update_and_delete_are_logged_and_delete_is_idempotent(
     )
     assert updated.memory_value == "30m"
     assert service.delete(memory.id, "demo-user").deleted
-    assert service.delete(memory.id, "demo-user").deleted
     events = MemoryEventRepository(database).list_for_memory(
         memory_id=str(memory.id), user_id="demo-user"
     )
-    assert [event["action"] for event in events] == [
-        "created",
-        "updated",
-        "deleted",
-    ]
+    assert events == []
     assert service.list(
         MemoryListQuery(user_id="demo-user", active=False)
-    ).total == 1
+    ).total == 0
+    with pytest.raises(ResourceNotFoundError, match="记忆不存在"):
+        service.delete(memory.id, "demo-user")
 
 
 def test_memory_write_rolls_back_when_event_write_fails(

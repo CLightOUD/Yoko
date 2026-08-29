@@ -275,21 +275,17 @@ class MemoryService:
             )
             if current is None:
                 raise ResourceNotFoundError("记忆不存在")
-            if current["active"]:
-                updated = self.memories.update(
-                    memory_id=str(memory_id),
-                    user_id=user_id,
-                    updates={"active": False},
-                    connection=connection,
-                )
-                self.events.create(
-                    memory_id=str(memory_id),
-                    user_id=user_id,
-                    action="deleted",
-                    before_value=self._snapshot(current),
-                    after_value=self._snapshot(updated),
-                    connection=connection,
-                )
+            self.events.delete_for_memory(
+                memory_id=str(memory_id),
+                user_id=user_id,
+                connection=connection,
+            )
+            if not self.memories.delete(
+                memory_id=str(memory_id),
+                user_id=user_id,
+                connection=connection,
+            ):
+                raise ResourceNotFoundError("记忆不存在")
         return DeleteResponse(id=memory_id, deleted=True)
 
     def _require_user(

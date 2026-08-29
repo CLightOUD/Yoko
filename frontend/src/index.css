@@ -12,11 +12,11 @@
   --color-danger: #c0392b;
   --color-warning: #9a6a00;
 
-  /* 字号：正文不低于 18px */
-  --font-size-base: 20px;
-  --font-size-lg: 26px;
-  --font-size-xl: 30px;
-  --font-size-sm: 16px;
+  /* 适老字号：辅助文字也不低于 18px */
+  --font-size-base: 22px;
+  --font-size-lg: 28px;
+  --font-size-xl: 32px;
+  --font-size-sm: 18px;
 
   --radius: 12px;
   --radius-sm: 8px;

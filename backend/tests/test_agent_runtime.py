@@ -395,19 +395,23 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
 
     class FakeSearchService:
         def search(self, query, *, max_results):
-            queries.append(query)
+            queries.append(("bing", query))
             assert max_results == 5
-            if query == "北京 最新 养老补贴 政策":
-                return WebSearchResponse(
-                    query=query,
-                    results=(
-                        WebSearchResult(
-                            title="北京旅游攻略",
-                            url="https://example.com/travel",
-                            snippet="介绍北京景点。",
-                        ),
+            assert query == "北京 最新 养老补贴 政策"
+            return WebSearchResponse(
+                query=query,
+                results=(
+                    WebSearchResult(
+                        title="北京旅游攻略",
+                        url="https://example.com/travel",
+                        snippet="介绍北京景点。",
                     ),
-                )
+                ),
+            )
+
+        def search_alternative(self, query, *, max_results):
+            queries.append(("duckduckgo", query))
+            assert max_results == 5
             assert query == "北京 高龄津贴 政策"
             return WebSearchResponse(
                 query=query,
@@ -416,8 +420,10 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                         title="北京市养老服务政策",
                         url="https://example.gov.cn/policy",
                         snippet="政策页面于2026年更新。",
+                        source="duckduckgo",
                     ),
                 ),
+                source="duckduckgo",
             )
 
         def fetch_pages(self, results, *, max_pages):
@@ -433,6 +439,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                         if "policy" in item.url
                         else "北京景点与交通介绍。"
                     ),
+                    source=item.source,
                 )
                 for item in results
             )
@@ -488,7 +495,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                 reason="政策页直接回答问题" if relevant else "只有旅游信息",
                 retry_query=None if relevant else "北京 高龄津贴 政策",
             ),
-            results=kwargs["results"] if relevant else (),
+            results=(kwargs["results"][1],) if relevant else (),
             model_messages=[
                 AIMessage(
                     content="",
@@ -507,7 +514,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
             plan=SearchPlan(
                 standalone_question="北京最新养老补贴政策是什么",
                 search_query="北京 最新 养老补贴 政策",
-                fallback_query="北京 高龄津贴 政策",
+                fallback_query="北京 养老 政策",
                 required_evidence=["适用对象", "有效时间"],
                 confidence=0.96,
                 reason="准备精确查询和高召回备选查询",
@@ -569,12 +576,17 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
     assert [call.tool_name for call in result.tool_calls] == ["web_search"]
     assert result.tool_calls[0].status == "success"
     assert "尝试 2 次" in result.tool_calls[0].summary
-    assert queries == ["北京 最新 养老补贴 政策", "北京 高龄津贴 政策"]
+    assert queries == [
+        ("bing", "北京 最新 养老补贴 政策"),
+        ("duckduckgo", "北京 高龄津贴 政策"),
+    ]
     assert fetched_urls == [
         "https://example.com/travel",
         "https://example.gov.cn/policy",
     ]
     assert result.sources[0].title == "北京市养老服务政策"
+    assert result.sources[0].source == "duckduckgo"
+    assert "已查询DuckDuckGo" in result.tool_calls[0].summary
     assert "https://example.gov.cn/policy" in result.reply
     assert "13800138000" not in result.reply
     assert "elder.test@example.com" not in result.reply

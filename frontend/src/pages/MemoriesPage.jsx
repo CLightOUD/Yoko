@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Pause, RefreshCw, Trash2 } from 'lucide-react'
+import { Pause, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { deleteMemory, listMemories, updateMemory } from '../api/client'
 import { MEMORY_SCOPE, TASK_TYPE_LABEL } from '../api/constants'
 import { formatDateTime } from '../api/format'
@@ -7,6 +7,9 @@ import { formatDateTime } from '../api/format'
 export default function MemoriesPage() {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
+  const [activeFilter, setActiveFilter] = useState(true)
+  const [pendingDeletion, setPendingDeletion] = useState(null)
+  const [busyId, setBusyId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -14,7 +17,7 @@ export default function MemoriesPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await listMemories({ active: true })
+      const res = await listMemories({ active: activeFilter })
       setItems(res.items)
       setTotal(res.total)
     } catch (err) {
@@ -22,7 +25,7 @@ export default function MemoriesPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeFilter])
 
   useEffect(() => {
     let cancelled = false
@@ -30,7 +33,7 @@ export default function MemoriesPage() {
       setLoading(true)
       setError('')
       try {
-        const res = await listMemories({ active: true })
+        const res = await listMemories({ active: activeFilter })
         if (!cancelled) {
           setItems(res.items)
           setTotal(res.total)
@@ -43,25 +46,43 @@ export default function MemoriesPage() {
     }
     fetchData()
     return () => { cancelled = true }
-  }, [])
+  }, [activeFilter])
 
   async function handleDisable(id) {
+    setBusyId(id)
     try {
       await updateMemory(id, { active: false })
-      load()
+      await load()
     } catch (err) {
       setError(err.message || '操作失败，请重试')
+    } finally {
+      setBusyId(null)
     }
   }
 
-  async function handleDelete(id, displayText) {
-    const confirmed = window.confirm(`确定要删除“${displayText}”这条记忆吗？`)
-    if (!confirmed) return
+  async function handleEnable(id) {
+    setBusyId(id)
     try {
-      await deleteMemory(id)
-      load()
+      await updateMemory(id, { active: true })
+      await load()
+    } catch (err) {
+      setError(err.message || '重新启用失败，请重试')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDeletion || busyId) return
+    setBusyId(pendingDeletion.id)
+    try {
+      await deleteMemory(pendingDeletion.id)
+      setPendingDeletion(null)
+      await load()
     } catch (err) {
       setError(err.message || '删除失败，请重试')
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -80,6 +101,23 @@ export default function MemoriesPage() {
         </button>
       </div>
 
+      <div className="filter-tabs" role="group" aria-label="按状态筛选记忆">
+        <button
+          type="button"
+          className={`filter-tab${activeFilter ? ' filter-tab--active' : ''}`}
+          onClick={() => setActiveFilter(true)}
+        >
+          使用中
+        </button>
+        <button
+          type="button"
+          className={`filter-tab${!activeFilter ? ' filter-tab--active' : ''}`}
+          onClick={() => setActiveFilter(false)}
+        >
+          已停用
+        </button>
+      </div>
+
       {error && (
         <div className="error-banner" role="alert">
           {error}
@@ -89,10 +127,16 @@ export default function MemoriesPage() {
       {loading ? (
         <p className="empty">正在加载…</p>
       ) : items.length === 0 ? (
-        <p className="empty">您还没有记忆。在对话中表达长期偏好，Yoko 会帮您记住。</p>
+        <p className="empty">
+          {activeFilter
+            ? '您还没有使用中的记忆。在对话中表达长期偏好，Yoko 会帮您记住。'
+            : '您没有已停用的记忆。'}
+        </p>
       ) : (
         <div className="card">
-          <h2 className="section-title">已记住（{total}）</h2>
+          <h2 className="section-title">
+            {activeFilter ? '使用中的记忆' : '已停用的记忆'}（{total}）
+          </h2>
           {items.map((memory) => (
             <div key={memory.id} className="list-item">
               <div className="list-item__row">
@@ -112,18 +156,35 @@ export default function MemoriesPage() {
                 {memory.last_used_at ? formatDateTime(memory.last_used_at) : '尚未使用'}
               </div>
               <div className="list-item__row">
-                <button
-                  className="btn btn--secondary btn--small"
-                  type="button"
-                  onClick={() => handleDisable(memory.id)}
-                >
-                  <Pause aria-hidden="true" />
-                  停用
-                </button>
+                {activeFilter ? (
+                  <button
+                    className="btn btn--secondary btn--small"
+                    type="button"
+                    onClick={() => handleDisable(memory.id)}
+                    disabled={busyId === memory.id}
+                  >
+                    <Pause aria-hidden="true" />
+                    停用
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn--secondary btn--small"
+                    type="button"
+                    onClick={() => handleEnable(memory.id)}
+                    disabled={busyId === memory.id}
+                  >
+                    <Play aria-hidden="true" />
+                    重新启用
+                  </button>
+                )}
                 <button
                   className="btn btn--danger btn--small"
                   type="button"
-                  onClick={() => handleDelete(memory.id, memory.display_text)}
+                  onClick={() => setPendingDeletion({
+                    id: memory.id,
+                    displayText: memory.display_text,
+                  })}
+                  disabled={busyId === memory.id}
                 >
                   <Trash2 aria-hidden="true" />
                   删除
@@ -131,6 +192,50 @@ export default function MemoriesPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {pendingDeletion && (
+        <div
+          className="confirm-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busyId) {
+              setPendingDeletion(null)
+            }
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-memory-title"
+            aria-describedby="delete-memory-description"
+          >
+            <h2 id="delete-memory-title" className="section-title">永久删除记忆</h2>
+            <p id="delete-memory-description">
+              确定要永久删除“{pendingDeletion.displayText}”吗？删除后无法恢复。
+            </p>
+            <div className="btn-row confirm-dialog__actions">
+              <button
+                className="btn btn--secondary"
+                type="button"
+                onClick={() => setPendingDeletion(null)}
+                disabled={Boolean(busyId)}
+                autoFocus
+              >
+                取消
+              </button>
+              <button
+                className="btn btn--danger"
+                type="button"
+                onClick={confirmDelete}
+                disabled={Boolean(busyId)}
+              >
+                {busyId ? '正在删除…' : '永久删除'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

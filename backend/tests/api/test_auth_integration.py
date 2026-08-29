@@ -21,6 +21,43 @@ def test_business_routes_require_a_valid_session(tmp_path) -> None:
     assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
 
 
+def test_same_account_can_stay_logged_in_on_two_clients(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PUSH_ENABLED", "false")
+    app = create_app(database=Database(tmp_path / "multi-device.db"))
+    client_options = {
+        "raise_server_exceptions": False,
+        "headers": {"Origin": "http://127.0.0.1:5173"},
+    }
+
+    with TestClient(app, **client_options) as first_client:
+        registered = first_client.post(
+            "/api/auth/register",
+            json={
+                "username": "multi_device_user",
+                "password": "correct-horse-2026",
+                "display_name": "多端测试用户",
+                "timezone": "Asia/Shanghai",
+            },
+        )
+        assert registered.status_code == 201
+
+        with TestClient(app, **client_options) as second_client:
+            logged_in = second_client.post(
+                "/api/auth/login",
+                json={
+                    "username": "multi_device_user",
+                    "password": "correct-horse-2026",
+                },
+            )
+            assert logged_in.status_code == 200
+            assert second_client.get("/api/auth/me").status_code == 200
+
+        # A login on another client must not revoke the original client's session.
+        assert first_client.get("/api/auth/me").status_code == 200
+
+
 def test_session_identity_ignores_client_user_id_and_isolates_accounts(client) -> None:
     first_user_id = client.app.state.test_user_id
     trigger_at = datetime.now(UTC) + timedelta(days=2)

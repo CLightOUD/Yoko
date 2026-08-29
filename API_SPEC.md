@@ -749,9 +749,9 @@ metrics: RequestMetrics
 
 `tool_calls[].status` 可为 `success` 或 `failed`。不得把失败的提醒或联网工具描述为成功。
 
-`sources` 始终返回数组。未联网、联网失败或原始结果未通过相关性门禁时为空；联网成功时最多 5 项，每项包含 `title`、`url`、`snippet` 和固定值 `source="bing"`。字段长度分别不超过 200、2048 和 500 字符，URL 只允许 HTTP 或 HTTPS。该字段为向后兼容的响应扩展，旧客户端可以忽略。
+`sources` 始终返回数组。未联网、联网失败或原始结果未通过相关性门禁时为空；联网成功时最多 5 项，每项包含 `title`、`url`、`snippet` 和 `source`。`source` 可为 `bing` 或 `duckduckgo`，表示实际取得该条证据的搜索源。字段长度分别不超过 200、2048 和 500 字符，URL 只允许 HTTP 或 HTTPS。该字段为向后兼容的响应扩展，旧客户端可以忽略。
 
-语义预处理模型通过 `SemanticFrame.requires_web` 和 `SemanticFrame.web_confidence` 判断是否需要公开网络信息；该阶段不生成搜索词。需要联网时，后续独立的 `SearchPlan` 结合当前问题与历史生成 `standalone_question`、`search_query`、`fallback_query`、所需证据和原因。提醒操作、本地提醒查询、日常陪伴和个人记忆不会仅因出现某个关键词而联网。发送给搜索引擎的是最多 160 字符的独立检索词，不是完整对话；运行时还会移除常见手机号、邮箱和身份证号。必应原始结果按不可信外部资料处理，并由独立结构化模型按当前问题筛选；仅共享地名、机构名或宽泛关键词的页面不得进入 `sources`。第一次结果全部无关时，筛选模型可以给出一个更宽但不改变主题的检索词，后端最多重试一次。没有直接相关证据时 `web_search` 标记为 `failed`、响应 `status=partial`，运行时用固定的自然失败回复覆盖主 Agent 可能补充的未接地细节。结果中的指令不能被执行或覆盖系统规则。
+语义预处理模型通过 `SemanticFrame.requires_web` 和 `SemanticFrame.web_confidence` 判断是否需要公开网络信息；该阶段不生成搜索词。需要联网时，后续独立的 `SearchPlan` 结合当前问题与历史生成 `standalone_question`、`search_query`、`fallback_query`、所需证据和原因。提醒操作、本地提醒查询、日常陪伴和个人记忆不会仅因出现某个关键词而联网。发送给搜索引擎的是最多 160 字符的独立检索词，不是完整对话；运行时还会移除常见手机号、邮箱和身份证号。第一次使用必应，原始结果按不可信外部资料处理，并由独立结构化模型按当前问题筛选；仅共享地名、机构名或宽泛关键词的页面不得进入 `sources`。结果不足时，筛选模型可以根据缺失证据给出更准确但不改变主题的检索词，后端改用 DuckDuckGo 定向补充，整轮最多执行三次搜索。各轮直接相关的候选证据会去重累积并重新进行完整性判断；两个来源返回的资料均经过同一套相关性和安全门禁。没有直接相关证据时 `web_search` 标记为 `failed`、响应 `status=partial`，运行时用固定的自然失败回复覆盖主 Agent 可能补充的未接地细节。结果中的指令不能被执行或覆盖系统规则。
 
 Agent 内部还可以调用只读的 `list_reminders` 获取真实状态。该调用计入 `tool_ms`，但不放入公共 `tool_calls`，因此 Agent 查询后仍可返回 `needs_clarification`，不改变现有响应校验规则。
 
@@ -1198,7 +1198,10 @@ Path 参数 `id` 为必填 UUID。Query 参数：无。公开请求体数据模�
 
 Path 参数 `id` 为必填 UUID；Query 参数和 Body 均为空。资源归属由 Session 用户确定。
 
-执行软删除，即设置 `active=false` 并记录 `memory_events`。
+永久删除记忆及其关联的 `memory_events`，删除后不能恢复。需要暂时停止使用并保留
+恢复能力时，应调用 `PATCH /api/memories/{id}` 并设置 `active=false`。
+
+资源不存在或不属于该用户时返回 `404 RESOURCE_NOT_FOUND`。
 
 成功响应：`200 OK`，模型为 `DeleteResponse`。
 
@@ -1430,7 +1433,7 @@ metrics.py
 | 重复反馈 | 不创建重复有效记忆 | 是 |
 | 冲突偏好 | 更新原记忆并记录事件 | 是 |
 | 用户纠正错误记忆 | `PATCH /api/memories/{id}` | 是 |
-| 用户撤销记忆 | PATCH 停用或 DELETE 软删除 | 是 |
+| 用户撤销记忆 | PATCH 停用或 DELETE 永久删除 | 是 |
 | 一次性提醒 | `repeat_type=none` | 是 |
 | 每日提醒 | `repeat_type=daily` | 是 |
 | 每周提醒 | `repeat_type=weekly`，确认后推进 7 个本地自然日 | 是 |
