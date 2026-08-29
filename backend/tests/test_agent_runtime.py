@@ -325,6 +325,7 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
     )
     plan = SearchPlan(
         standalone_question="乙机构2026年的申请条件是什么",
+        core_subject="乙机构",
         search_query="乙机构 2026 申请条件 官方",
         required_evidence=["适用对象", "申请条件", "有效时间"],
         freshness_required=True,
@@ -362,6 +363,7 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
     assert "不得擅自加入发布日期、平台" in calls[0][0].content
     assert "宽泛问题" in calls[0][0].content
     assert "answer_scope" in calls[0][0].content
+    assert "core_subject" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["recent_history"][-1]["content"] == "乙机构呢"
     assert "draft" not in payload
@@ -845,6 +847,41 @@ def test_search_prefilter_ranks_strong_matches_without_dropping_low_overlap() ->
         results=(results[0],),
     )
     assert low_overlap == (results[0],)
+
+
+def test_search_query_anchor_preserves_complete_core_subject() -> None:
+    assert LangChainAgent._anchor_search_query(
+        "大连理工大学 学校简介 官方",
+        "大连理工大学",
+    ) == '"大连理工大学" 学校简介 官方'
+    assert LangChainAgent._anchor_search_query(
+        "大连 学校资料",
+        "大连理工大学",
+    ) == '"大连理工大学" 大连 学校资料'
+    assert LangChainAgent._anchor_search_query(
+        '"大连理工大学" 学校简介',
+        "大连理工大学",
+    ) == '"大连理工大学" 学校简介'
+
+
+def test_search_prefilter_understands_quoted_subject_terms() -> None:
+    university = WebSearchResult(
+        title="大连理工大学学校简介",
+        url="https://www.dlut.edu.cn/about",
+        snippet="学校基本情况与办学特色。",
+    )
+    city = WebSearchResult(
+        title="大连旅游攻略",
+        url="https://example.com/travel",
+        snippet="城市景点与旅游路线。",
+    )
+
+    selected = LangChainAgent._prefilter_search_results(
+        query='"大连理工大学" 学校简介 官方',
+        results=(city, university),
+    )
+
+    assert selected == (university,)
 
 
 def test_search_prefilter_preserves_semantic_chinese_variants() -> None:

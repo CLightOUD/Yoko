@@ -92,6 +92,7 @@ def test_duckduckgo_search_unwraps_redirects_and_caches_results() -> None:
         client=_client(handler),
         cache_ttl_seconds=60,
         minimum_interval_seconds=0,
+        duckduckgo_enabled=True,
     )
     first = service.search_alternative("原神 玩家评价 口碑")
     second = service.search_alternative("原神 玩家评价 口碑")
@@ -143,6 +144,7 @@ def test_duckduckgo_connection_failure_falls_back_to_bing() -> None:
     service = WebSearchService(
         client=_client(handler),
         minimum_interval_seconds=0,
+        duckduckgo_enabled=True,
     )
     result = service.search_alternative("原神 当前版本")
 

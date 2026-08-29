@@ -241,6 +241,7 @@ class SemanticPreprocessResult:
 
 class SearchPlan(BaseModel):
     standalone_question: str = Field(min_length=1, max_length=1_500)
+    core_subject: str | None = Field(default=None, min_length=1, max_length=100)
     search_query: str = Field(min_length=1, max_length=160)
     fallback_query: str | None = Field(default=None, max_length=160)
     answer_scope: Literal["overview", "specific"] = "specific"
@@ -546,7 +547,10 @@ class LangChainAgent:
             and search_plan_result.plan.confidence >= 0.65
         ):
             search_plan = search_plan_result.plan
-            current_query = search_plan.search_query
+            current_query = self._anchor_search_query(
+                search_plan.search_query,
+                search_plan.core_subject,
+            )
             search_ms = 0
             search_attempts = 0
             search_response = None
@@ -577,9 +581,10 @@ class LangChainAgent:
                 search_attempts += 1
                 selection = None
                 if not search_response.results:
-                    planned_fallback = (
-                        search_plan.fallback_query or ""
-                    ).strip()
+                    planned_fallback = self._anchor_search_query(
+                        search_plan.fallback_query or "",
+                        search_plan.core_subject,
+                    )
                     if (
                         attempt == 0
                         and planned_fallback
@@ -633,8 +638,14 @@ class LangChainAgent:
                 web_model_ms += selection.model_ms
                 if selection.results:
                     break
-                planned_fallback = (search_plan.fallback_query or "").strip()
-                evidence_retry = (selection.decision.retry_query or "").strip()
+                planned_fallback = self._anchor_search_query(
+                    search_plan.fallback_query or "",
+                    search_plan.core_subject,
+                )
+                evidence_retry = self._anchor_search_query(
+                    selection.decision.retry_query or "",
+                    search_plan.core_subject,
+                )
                 retry_query = next(
                     (
                         candidate
@@ -719,7 +730,7 @@ class LangChainAgent:
                         tool_name="web_search",
                         status="failed",
                         summary=(
-                            "候选内容不足："
+                            f"检索词：{search_response.query}；候选内容不足："
                             f"{selection.decision.reason}"
                             + (
                                 "；仍缺少："
@@ -1594,8 +1605,13 @@ class LangChainAgent:
             "当前消息没有再次说出某个约束，不代表把它替换为当前时间、默认地点或其他默认值；"
             "缺省不是取消。规划时先识别上一轮未解决问题，再列出当前明确改变的条件，最后继承"
             "所有未被当前消息冲突或撤销的条件。例如用户先查询某时间、某对象的一项信息，随后"
-            "只替换对象，独立问题必须保留原时间和信息主题。search_query 是供"
-            "搜索引擎使用的短关键词组合，删除寒暄和问句成分，但必须保留问题主题、对象、地点、"
+            "只替换对象，独立问题必须保留原时间和信息主题。core_subject 提取当前问题不可丢失"
+            "的核心公开实体完整"
+            "名称，例如学校、医院、机构、人物、作品或产品；没有明确核心实体时填 null。不得把"
+            "地点片段当作完整实体，例如目标是‘大连理工大学’时不能只填‘大连’。初始、备用和"
+            "证据补充检索都会强制保留 core_subject，因此必须准确且不得包含个人敏感信息。"
+            "search_query 是供搜索引擎使用的短关键词组合，删除寒暄和问句成分，但必须保留问题"
+            "主题、对象、地点、"
             "范围及必要来源要求；独立问题负责保存全部精确约束，搜索词只保留有助于找到正确页面"
             "的约束。对于内容持续更新的滚动页面，优先使用主题、对象和‘当前’‘最新’等来源语义，"
             "必要时可完全省略相对或绝对时间词以找到该主题的权威入口页；不要同时堆入相对日期和"
@@ -1670,9 +1686,9 @@ class LangChainAgent:
         results: tuple[WebSearchResult, ...],
     ) -> tuple[WebSearchResult, ...]:
         terms = [
-            term.casefold()
+            term.strip('"“”').casefold()
             for term in re.split(r"\s+", query)
-            if len(term.strip()) >= 2
+            if len(term.strip('"“” ')) >= 2
         ]
         if len(terms) < 2 or len(results) <= 1:
             return results[:3]
@@ -1700,6 +1716,27 @@ class LangChainAgent:
         return tuple(selected[:3] or results[:3])
 
     @staticmethod
+    def _anchor_search_query(query: str, core_subject: str | None) -> str:
+        normalized_query = re.sub(r"\s+", " ", query).strip()
+        subject = re.sub(r'["“”]+', "", core_subject or "").strip()
+        if not normalized_query or not subject:
+            return normalized_query[:160]
+        quoted_subject = f'"{subject}"'
+        if quoted_subject.casefold() in normalized_query.casefold():
+            return normalized_query[:160]
+        subject_index = normalized_query.casefold().find(subject.casefold())
+        if subject_index >= 0:
+            end = subject_index + len(subject)
+            normalized_query = (
+                normalized_query[:subject_index]
+                + quoted_subject
+                + normalized_query[end:]
+            )
+        else:
+            normalized_query = f"{quoted_subject} {normalized_query}"
+        return normalized_query[:160]
+
+    @staticmethod
     def _compact_web_content(
         *,
         content: str,
@@ -1710,9 +1747,9 @@ class LangChainAgent:
         if len(content) <= max_chars:
             return content
         terms = [
-            term.casefold()
+            term.strip('"“”').casefold()
             for term in re.split(r"\s+", query)
-            if len(term.strip()) >= 2
+            if len(term.strip('"“” ')) >= 2
         ]
         chunks = [
             content[index : index + 700]
