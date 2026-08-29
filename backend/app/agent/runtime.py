@@ -243,6 +243,7 @@ class SearchPlan(BaseModel):
     standalone_question: str = Field(min_length=1, max_length=1_500)
     search_query: str = Field(min_length=1, max_length=160)
     fallback_query: str | None = Field(default=None, max_length=160)
+    answer_scope: Literal["overview", "specific"] = "specific"
     required_evidence: list[str] = Field(default_factory=list, max_length=6)
     freshness_required: bool = False
     preferred_source_types: list[str] = Field(default_factory=list, max_length=4)
@@ -624,6 +625,7 @@ class LangChainAgent:
                     model=model,
                     question=standalone_question,
                     query=search_response.query,
+                    answer_scope=search_plan.answer_scope,
                     required_evidence=search_plan.required_evidence,
                     results=tuple(accumulated_results),
                 )
@@ -716,7 +718,16 @@ class LangChainAgent:
                     ToolCallView(
                         tool_name="web_search",
                         status="failed",
-                        summary="已找到候选页面，但内容不足以可靠回答",
+                        summary=(
+                            "候选内容不足："
+                            f"{selection.decision.reason}"
+                            + (
+                                "；仍缺少："
+                                + "、".join(selection.decision.missing_evidence[:3])
+                                if selection.decision.missing_evidence
+                                else ""
+                            )
+                        )[:500],
                         latency_ms=search_ms,
                     )
                 )
@@ -1596,6 +1607,10 @@ class LangChainAgent:
             "固定关键词规则。它只能包含用户问题实际要求的必要事实，不得擅自加入发布日期、平台、"
             "价格、地点、规格、申请条件等用户没有询问的细节。对于‘介绍一下’等宽泛问题，只列"
             "足以形成简要概览的两到三项核心事实，不能把详尽百科条目当作回答门槛。"
+            "answer_scope 由语义决定：用户宽泛要求查资料、了解或概览某个对象时填 overview；"
+            "用户明确询问版本号、日期、金额、条件、状态等可核验事实时填 specific。不得用关键词"
+            "白名单代替语义判断。overview 允许只基于已经核实的部分资料形成有限概览，specific"
+            "则必须覆盖用户实际询问的关键事实。"
             "freshness_required 表示答案是否依赖当前或近期信息。"
             "fallback_query 是第一轮结果无关或证据不足时使用的高召回备选词：只保留核心主题、"
             "对象、地点和来源类别，主动去掉一个可能压低召回率的日期、型号、版本或过窄限定；"
@@ -1726,6 +1741,7 @@ class LangChainAgent:
         question: str,
         query: str,
         results: tuple[WebSearchResult, ...],
+        answer_scope: Literal["overview", "specific"] = "specific",
         required_evidence: list[str] | None = None,
     ) -> WebEvidenceSelectionResult:
         prompt = (
@@ -1745,7 +1761,8 @@ class LangChainAgent:
             "covered_evidence 填写正文或符合上述条件的摘要已经"
             "覆盖的所需事实，missing_evidence 填写仍然缺少的事实。answerable 只有在保留证据足以"
             "支持一个直接、具体且不误导的回答，并覆盖问题所需的关键证据时才为 true。对于宽泛的"
-            "介绍、概览或开放式问题，只要证据足以给出有用且有限的简要回答即可为 true，不要求"
+            "介绍、概览或开放式问题，answer_scope 会是 overview；只要至少一条直接相关资料明确"
+            "覆盖了一项有用事实，就应允许基于已覆盖部分给出有限简要回答，不要求"
             "覆盖发布日期、平台或其他用户未问的可选细节；回答范围应服从已有证据，而不是因无法"
             "写成完整百科而拒绝回答。对于精确问题，用户明确索取的事实仍必须全部覆盖。confidence"
             "表示筛选结论的把握程度。证据不足时，应在 retry_query 针对 missing_evidence 生成一次"
@@ -1757,6 +1774,7 @@ class LangChainAgent:
         )
         payload = {
             "question": question,
+            "answer_scope": answer_scope,
             "required_evidence": required_evidence or [],
             "query": query,
             "results": [
@@ -1803,6 +1821,22 @@ class LangChainAgent:
                 if 1 <= index <= len(results)
             )
         )
+        overview_has_usable_evidence = (
+            answer_scope == "overview"
+            and bool(valid_indices)
+            and bool(decision.covered_evidence)
+            and decision.confidence >= 0.65
+        )
+        if overview_has_usable_evidence and not decision.answerable:
+            decision = decision.model_copy(
+                update={
+                    "answerable": True,
+                    "reason": (
+                        "现有证据可支持有限概览；回答仅限已覆盖事实。"
+                        f"原判断：{decision.reason}"
+                    )[:300],
+                }
+            )
         selected = (
             tuple(results[index - 1] for index in valid_indices)
             if decision.answerable and decision.confidence >= 0.65

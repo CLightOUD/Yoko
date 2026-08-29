@@ -361,6 +361,7 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
     assert "只替换地点、对象、机构、时间" in calls[0][0].content
     assert "不得擅自加入发布日期、平台" in calls[0][0].content
     assert "宽泛问题" in calls[0][0].content
+    assert "answer_scope" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
     assert payload["recent_history"][-1]["content"] == "乙机构呢"
     assert "draft" not in payload
@@ -776,6 +777,47 @@ def test_web_evidence_selector_rejects_unanswerable_or_low_confidence() -> None:
             results=results,
         )
         assert selected.results == ()
+
+
+def test_web_evidence_selector_allows_bounded_overview_from_covered_facts() -> None:
+    result = WebSearchResult(
+        title="大连理工大学学校简介",
+        url="https://www.dlut.edu.cn/about",
+        snippet="学校位于辽宁省大连市，是一所以理工科见长的高校。",
+        content="大连理工大学坐落于大连，是教育部直属的全国重点大学。",
+    )
+    decision = WebEvidenceDecision(
+        relevant_indices=[1],
+        answerable=False,
+        covered_evidence=["学校所在地", "办学性质"],
+        missing_evidence=["院系设置"],
+        confidence=0.86,
+        reason="已覆盖基本情况，但没有院系设置资料",
+    )
+
+    class StructuredModel:
+        def invoke(self, messages):
+            payload = json.loads(messages[1].content)
+            assert payload["answer_scope"] == "overview"
+            return {"raw": AIMessage(content=""), "parsed": decision}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            assert schema is WebEvidenceDecision
+            return StructuredModel()
+
+    selected = ORIGINAL_SELECT_WEB_EVIDENCE(
+        model=FakeModel(),
+        question="查一下大连理工大学的资料",
+        query="大连理工大学 学校简介 官方",
+        answer_scope="overview",
+        required_evidence=["学校所在地", "办学性质", "主要概况"],
+        results=(result,),
+    )
+
+    assert selected.results == (result,)
+    assert selected.decision.answerable is True
+    assert "有限概览" in selected.decision.reason
 
 
 def test_search_prefilter_ranks_strong_matches_without_dropping_low_overlap() -> None:
