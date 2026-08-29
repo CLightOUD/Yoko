@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import os
 import re
 import socket
 import ssl
@@ -329,12 +330,18 @@ class WebSearchService:
         minimum_interval_seconds: float = 1,
         search_cache_max_entries: int = 128,
         page_cache_max_entries: int = 256,
+        duckduckgo_enabled: bool | None = None,
     ) -> None:
         self._client = client
         self._cache_ttl_seconds = max(0, cache_ttl_seconds)
         self._minimum_interval_seconds = max(0, minimum_interval_seconds)
         self._search_cache_max_entries = max(1, search_cache_max_entries)
         self._page_cache_max_entries = max(1, page_cache_max_entries)
+        self._duckduckgo_enabled = (
+            _env_flag("WEB_SEARCH_DDG_ENABLED", default=True)
+            if duckduckgo_enabled is None
+            else duckduckgo_enabled
+        )
         self._cache: OrderedDict[
             str, tuple[float, tuple[WebSearchResult, ...]]
         ] = OrderedDict()
@@ -426,6 +433,8 @@ class WebSearchService:
                 error="搜索词为空或只包含了被移除的敏感信息",
                 source="duckduckgo",
             )
+        if not self._duckduckgo_enabled:
+            return self.search(safe_query, max_results=max_results)
         limit = min(max(1, max_results), 5)
         cache_key = f"duckduckgo:{safe_query.casefold()}"
         cached = self._get_cached(cache_key, limit)
@@ -468,11 +477,15 @@ class WebSearchService:
                         source="duckduckgo",
                     )
                 error = "DuckDuckGo 没有返回可解析的搜索结果"
+        bing_fallback = self.search(safe_query, max_results=limit)
+        if bing_fallback.results:
+            return bing_fallback
+        fallback_error = bing_fallback.error or "必应没有返回可用结果"
         return WebSearchResponse(
             query=safe_query,
             results=(),
-            error=error,
-            source="duckduckgo",
+            error=f"{error}；必应回退失败：{fallback_error}",
+            source="bing",
         )
 
     def _request(self, query: str) -> httpx.Response:
@@ -737,6 +750,13 @@ class WebSearchService:
             if delay > 0:
                 sleep(delay)
             self._last_request_started = monotonic()
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _collapse_whitespace(value: str) -> str:

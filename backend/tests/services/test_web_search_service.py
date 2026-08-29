@@ -105,6 +105,53 @@ def test_duckduckgo_search_unwraps_redirects_and_caches_results() -> None:
     assert second.cached is True
 
 
+def test_alternative_search_uses_bing_when_duckduckgo_is_disabled() -> None:
+    html = """
+    <li class="b_algo"><h2><a href="https://example.com/current">当前版本</a></h2>
+    <p>官方版本信息。</p></li>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "www.bing.com"
+        return httpx.Response(200, text=html, request=request)
+
+    service = WebSearchService(
+        client=_client(handler),
+        minimum_interval_seconds=0,
+        duckduckgo_enabled=False,
+    )
+    result = service.search_alternative("原神 当前版本")
+
+    assert result.error is None
+    assert result.source == "bing"
+    assert result.results[0].title == "当前版本"
+
+
+def test_duckduckgo_connection_failure_falls_back_to_bing() -> None:
+    requested_hosts: list[str] = []
+    html = """
+    <li class="b_algo"><h2><a href="https://example.com/current">当前版本</a></h2>
+    <p>官方版本信息。</p></li>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host)
+        if request.url.host == "html.duckduckgo.com":
+            raise httpx.ConnectError("connection failed", request=request)
+        return httpx.Response(200, text=html, request=request)
+
+    service = WebSearchService(
+        client=_client(handler),
+        minimum_interval_seconds=0,
+    )
+    result = service.search_alternative("原神 当前版本")
+
+    assert requested_hosts == ["html.duckduckgo.com", "www.bing.com"]
+    assert result.error is None
+    assert result.source == "bing"
+    assert result.results[0].title == "当前版本"
+
+
 def test_search_cache_can_expand_after_an_initial_smaller_result_limit() -> None:
     calls = 0
     html = """
