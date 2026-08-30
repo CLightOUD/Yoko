@@ -97,7 +97,7 @@ class WebSource(APIModel):
     title: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=10, max_length=2048, pattern=r"^https?://")
     snippet: str = Field(max_length=500)
-    source: Literal["bing", "duckduckgo"] = "bing"
+    source: Literal["bing", "duckduckgo", "so360"] = "bing"
 
 
 class RequestMetrics(APIModel):
