@@ -860,6 +860,46 @@ def test_web_evidence_selector_allows_bounded_overview_from_covered_facts() -> N
     assert "有限概览" in selected.decision.reason
 
 
+def test_web_evidence_selector_separates_overview_coverage_from_relevance_confidence() -> None:
+    result = WebSearchResult(
+        title="权威机构院校信息",
+        url="https://authority.example.edu/school",
+        snippet="该校工程学和化学入选世界一流学科建设名单。",
+    )
+    decision = WebEvidenceDecision(
+        relevant_indices=[1],
+        answerable=False,
+        covered_evidence=["工程学和化学入选世界一流学科建设名单"],
+        missing_evidence=["建校时间", "校区信息"],
+        confidence=0.5,
+        reason="资料直接相关，但只能覆盖部分概况。",
+        retry_query="目标学校 建校时间 校区 官方",
+    )
+
+    class StructuredModel:
+        def invoke(self, messages):
+            assert "不能仅因概览资料不完整而压低" in messages[0].content
+            return {"raw": AIMessage(content=""), "parsed": decision}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            assert schema is WebEvidenceDecision
+            return StructuredModel()
+
+    selected = ORIGINAL_SELECT_WEB_EVIDENCE(
+        model=FakeModel(),
+        question="搜索目标学校的消息",
+        query="目标学校 学校简介",
+        answer_scope="overview",
+        required_evidence=["学科特色", "建校时间", "校区信息"],
+        results=(result,),
+    )
+
+    assert selected.results == (result,)
+    assert selected.decision.answerable is True
+    assert selected.decision.missing_evidence == ["建校时间", "校区信息"]
+
+
 def test_search_prefilter_ranks_strong_matches_without_dropping_low_overlap() -> None:
     results = (
         WebSearchResult(

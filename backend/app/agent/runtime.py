@@ -638,6 +638,21 @@ class LangChainAgent:
                 web_model_messages.extend(selection.model_messages)
                 web_model_ms += selection.model_ms
                 if selection.results:
+                    evidence_retry = self._anchor_search_query(
+                        selection.decision.retry_query or "",
+                        search_plan.core_subject,
+                    )
+                    should_complete_overview = (
+                        search_plan.answer_scope == "overview"
+                        and bool(selection.decision.missing_evidence)
+                        and bool(evidence_retry)
+                        and evidence_retry.casefold()
+                        != search_response.query.casefold()
+                        and attempt < 2
+                    )
+                    if should_complete_overview:
+                        current_query = evidence_retry
+                        continue
                     break
                 planned_fallback = self._anchor_search_query(
                     search_plan.fallback_query or "",
@@ -1810,7 +1825,9 @@ class LangChainAgent:
             "宽泛宣传语、搜索词重合或模型常识降级通过；使用摘要降级时 confidence 不得高于0.8。"
             "covered_evidence 填写正文或符合上述条件的摘要已经"
             "覆盖的所需事实，missing_evidence 填写仍然缺少的事实。answerable 只有在保留证据足以"
-            "支持一个直接、具体且不误导的回答，并覆盖问题所需的关键证据时才为 true。对于宽泛的"
+            "支持一个直接、具体且不误导的回答，并覆盖问题所需的关键证据时才为 true。confidence"
+            "表示对所选资料与已覆盖事实确实相关的把握，不表示资料覆盖是否完整；覆盖缺口只通过"
+            "missing_evidence 表达，不能仅因概览资料不完整而压低相关性置信度。对于宽泛的"
             "介绍、概览或开放式问题，answer_scope 会是 overview；只要至少一条直接相关资料明确"
             "覆盖了一项有用事实，就应允许基于已覆盖部分给出有限简要回答，不要求"
             "覆盖发布日期、平台或其他用户未问的可选细节；回答范围应服从已有证据，而不是因无法"
@@ -1871,11 +1888,12 @@ class LangChainAgent:
                 if 1 <= index <= len(results)
             )
         )
+        minimum_confidence = 0.5 if answer_scope == "overview" else 0.65
         overview_has_usable_evidence = (
             answer_scope == "overview"
             and bool(valid_indices)
             and bool(decision.covered_evidence)
-            and decision.confidence >= 0.65
+            and decision.confidence >= minimum_confidence
         )
         if overview_has_usable_evidence and not decision.answerable:
             decision = decision.model_copy(
@@ -1889,7 +1907,7 @@ class LangChainAgent:
             )
         selected = (
             tuple(results[index - 1] for index in valid_indices)
-            if decision.answerable and decision.confidence >= 0.65
+            if decision.answerable and decision.confidence >= minimum_confidence
             else ()
         )
         raw = response.get("raw")
