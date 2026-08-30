@@ -9,6 +9,7 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const REQUEST_TIMEOUT_MS = 30000
+const CHAT_REQUEST_TIMEOUT_MS = 90000
 
 // 任一受保护接口确认登录过期时派发，认证状态统一回到登录页。
 const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
@@ -47,10 +48,20 @@ function parseRetryAfter(response) {
   return null
 }
 
-async function request(path, { method = 'GET', query, body, headers = {}, responseType = 'json' } = {}) {
+async function request(
+  path,
+  {
+    method = 'GET',
+    query,
+    body,
+    headers = {},
+    responseType = 'json',
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  } = {},
+) {
   const url = `${API_BASE_URL}${path}${buildQuery(query)}`
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   let response
   try {
@@ -192,6 +203,7 @@ export function sendChat({
     method: 'POST',
     body,
     headers: idempotency_key ? { 'Idempotency-Key': idempotency_key } : {},
+    timeoutMs: CHAT_REQUEST_TIMEOUT_MS,
   })
 }
 
