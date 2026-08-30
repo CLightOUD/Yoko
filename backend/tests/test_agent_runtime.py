@@ -43,6 +43,7 @@ def test_rejects_ungrounded_response_style_memory() -> None:
         memory_value="concise",
         display_text="回答风格偏好为简短清晰",
         reason="用户要求记住",
+        evidence_quote="他是我的舍友",
     )
 
     grounded, rejected = _ground_memory_candidates(
@@ -62,11 +63,32 @@ def test_accepts_explicit_response_style_memory() -> None:
         memory_value="concise",
         display_text="回答风格偏好为简短清晰",
         reason="用户明确表达长期偏好",
+        evidence_quote="以后回答简洁一点",
     )
 
     grounded, rejected = _ground_memory_candidates(
         [candidate],
         "记住，以后回答简洁一点",
+    )
+
+    assert grounded == [candidate]
+    assert rejected == 0
+
+
+def test_accepts_natural_concise_style_wording() -> None:
+    candidate = MemoryCandidateDecision(
+        scope="global",
+        task_type="global",
+        memory_key="response_style",
+        memory_value="concise",
+        display_text="回答风格偏好为简短清晰",
+        reason="用户明确表达长期偏好",
+        evidence_quote="以后说话短一点，别太长",
+    )
+
+    grounded, rejected = _ground_memory_candidates(
+        [candidate],
+        "以后说话短一点，别太长",
     )
 
     assert grounded == [candidate]
@@ -557,7 +579,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                 normalized_text="查询北京最新养老补贴政策",
                 intent="web_search",
                 requires_web=True,
-                web_confidence=0.96,
+                web_confidence=0.2,
                 confidence=0.96,
             ),
             model_messages=[],
@@ -598,7 +620,7 @@ def test_web_intent_runs_search_and_returns_sources(monkeypatch, tmp_path) -> No
                 search_query="北京 最新 养老补贴 政策",
                 fallback_query="北京 养老 政策",
                 required_evidence=["适用对象", "有效时间"],
-                confidence=0.96,
+                confidence=0.2,
                 reason="准备精确查询和高召回备选查询",
             ),
             model_messages=[
@@ -899,6 +921,91 @@ def test_web_evidence_selector_allows_bounded_overview_from_covered_facts() -> N
     assert selected.results == (result,)
     assert selected.decision.answerable is True
     assert "有限概览" in selected.decision.reason
+
+
+def test_web_evidence_selector_keeps_overview_when_coverage_list_is_omitted() -> None:
+    result = WebSearchResult(
+        title="大连理工大学学校简介",
+        url="https://www.dlut.edu.cn/about",
+        snippet="学校是教育部直属全国重点大学，以理工科人才培养和科学研究见长。",
+    )
+    decision = WebEvidenceDecision(
+        relevant_indices=[1],
+        answerable=False,
+        covered_evidence=[],
+        missing_evidence=["完整院系信息"],
+        confidence=0.78,
+        reason="结果直接相关，但没有覆盖完整概况。",
+    )
+
+    class StructuredModel:
+        def invoke(self, messages):
+            return {"raw": AIMessage(content=""), "parsed": decision}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            return StructuredModel()
+
+    selected = ORIGINAL_SELECT_WEB_EVIDENCE(
+        model=FakeModel(),
+        question="简单介绍一下大连理工大学",
+        query='"大连理工大学" 学校简介',
+        core_subject="大连理工大学",
+        answer_scope="overview",
+        results=(result,),
+    )
+
+    assert selected.results == (result,)
+    assert selected.decision.answerable is True
+
+
+def test_web_evidence_selector_recovers_exact_subject_overview_only() -> None:
+    relevant = WebSearchResult(
+        title="大连理工大学简介",
+        url="https://example.edu/about",
+        snippet="介绍学校的办学定位、人才培养和科学研究情况。",
+    )
+    drifted = WebSearchResult(
+        title="大连市旅游介绍",
+        url="https://example.com/travel",
+        snippet="介绍当地景点、美食和交通信息，与目标学校无关。",
+    )
+    decision = WebEvidenceDecision(
+        relevant_indices=[],
+        answerable=False,
+        confidence=0.42,
+        reason="未形成完整概览。",
+    )
+
+    class StructuredModel:
+        def invoke(self, messages):
+            return {"raw": AIMessage(content=""), "parsed": decision}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            return StructuredModel()
+
+    selected = ORIGINAL_SELECT_WEB_EVIDENCE(
+        model=FakeModel(),
+        question="查一下大连理工大学的资料",
+        query='"大连理工大学" 学校简介',
+        core_subject="大连理工大学",
+        answer_scope="overview",
+        results=(drifted, relevant),
+    )
+
+    assert selected.results == (relevant,)
+    assert selected.decision.answerable is True
+
+    strict = ORIGINAL_SELECT_WEB_EVIDENCE(
+        model=FakeModel(),
+        question="大连理工大学是哪一年建校的",
+        query='"大连理工大学" 建校时间',
+        core_subject="大连理工大学",
+        answer_scope="specific",
+        results=(relevant,),
+    )
+    assert strict.results == ()
 
 
 def test_web_evidence_selector_separates_overview_coverage_from_relevance_confidence() -> None:
@@ -2162,6 +2269,7 @@ def test_model_can_extract_long_term_preference_from_typo_without_tool_call(
                             "memory_value": "19:00",
                             "display_text": "服药提醒时间偏好为19:00",
                             "reason": "用户明确要求长期使用该时间",
+                            "evidence_quote": "记住，以后吃降压药都晚丄7典提酲我",
                         }
                     ],
                 },

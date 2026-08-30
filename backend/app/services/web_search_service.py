@@ -24,7 +24,7 @@ class WebSearchResult:
     url: str
     snippet: str
     content: str = ""
-    source: Literal["bing", "duckduckgo", "so360"] = "bing"
+    source: Literal["bocha", "bing", "duckduckgo", "so360"] = "bing"
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class WebSearchResponse:
     results: tuple[WebSearchResult, ...]
     cached: bool = False
     error: str | None = None
-    source: Literal["bing", "duckduckgo", "so360"] = "bing"
+    source: Literal["bocha", "bing", "duckduckgo", "so360"] = "bing"
 
 
 class _PageTooLargeError(ValueError):
@@ -426,6 +426,7 @@ class _ReadableTextParser(HTMLParser):
 
 
 class WebSearchService:
+    BOCHA_SEARCH_URL = "https://api.bocha.cn/v1/web-search"
     SEARCH_URL = "https://www.bing.com/search"
     ALTERNATIVE_SEARCH_URL = "https://html.duckduckgo.com/html/"
     DOMESTIC_SEARCH_URL = "https://m.so.com/s"
@@ -443,6 +444,10 @@ class WebSearchService:
         minimum_interval_seconds: float = 1,
         search_cache_max_entries: int = 128,
         page_cache_max_entries: int = 256,
+        bocha_api_key: str | None = None,
+        bocha_search_url: str = BOCHA_SEARCH_URL,
+        use_bocha: bool = False,
+        bing_enabled: bool = True,
         duckduckgo_enabled: bool | None = None,
         so360_enabled: bool | None = None,
     ) -> None:
@@ -451,6 +456,10 @@ class WebSearchService:
         self._minimum_interval_seconds = max(0, minimum_interval_seconds)
         self._search_cache_max_entries = max(1, search_cache_max_entries)
         self._page_cache_max_entries = max(1, page_cache_max_entries)
+        self._bocha_api_key = (bocha_api_key or "").strip()
+        self._bocha_search_url = bocha_search_url.strip() or self.BOCHA_SEARCH_URL
+        self._use_bocha = use_bocha
+        self._bing_enabled = bing_enabled
         self._duckduckgo_enabled = (
             _env_flag("WEB_SEARCH_DDG_ENABLED", default=True)
             if duckduckgo_enabled is None
@@ -468,6 +477,14 @@ class WebSearchService:
         self._lock = Lock()
         self._last_request_started = 0.0
 
+    @classmethod
+    def configured(cls) -> "WebSearchService":
+        return cls(
+            bocha_api_key=os.getenv("BOCHA_API_KEY"),
+            bocha_search_url=os.getenv("BOCHA_SEARCH_URL", cls.BOCHA_SEARCH_URL),
+            use_bocha=True,
+        )
+
     def search(self, query: str, *, max_results: int = 5) -> WebSearchResponse:
         safe_query = _sanitize_query(query)
         if not safe_query:
@@ -475,6 +492,14 @@ class WebSearchService:
                 query="",
                 results=(),
                 error="搜索词为空或只包含了被移除的敏感信息",
+            )
+        if self._use_bocha:
+            return self._search_bocha(safe_query, max_results=max_results)
+        if not self._bing_enabled:
+            return WebSearchResponse(
+                query=safe_query,
+                results=(),
+                error="必应搜索已禁用",
             )
         limit = min(max(1, max_results), 5)
         cache_key = safe_query.casefold()
@@ -552,6 +577,8 @@ class WebSearchService:
                 error="搜索词为空或只包含了被移除的敏感信息",
                 source="duckduckgo",
             )
+        if self._use_bocha:
+            return self._search_bocha(safe_query, max_results=max_results)
         limit = min(max(1, max_results), 5)
         domestic_error: str | None = None
         if self._so360_enabled:
@@ -560,10 +587,21 @@ class WebSearchService:
                 return domestic
             domestic_error = domestic.error
         if not self._duckduckgo_enabled:
-            bing_fallback = self.search(safe_query, max_results=limit)
-            if bing_fallback.results:
+            bing_fallback = (
+                self.search(safe_query, max_results=limit)
+                if self._bing_enabled
+                else None
+            )
+            if bing_fallback is not None and bing_fallback.results:
                 return bing_fallback
-            errors = [item for item in (domestic_error, bing_fallback.error) if item]
+            errors = [
+                item
+                for item in (
+                    domestic_error,
+                    bing_fallback.error if bing_fallback is not None else None,
+                )
+                if item
+            ]
             return WebSearchResponse(
                 query=safe_query,
                 results=(),
@@ -611,6 +649,14 @@ class WebSearchService:
                         source="duckduckgo",
                     )
                 error = "DuckDuckGo 没有返回可解析的搜索结果"
+        if not self._bing_enabled:
+            errors = [item for item in (domestic_error, error) if item]
+            return WebSearchResponse(
+                query=safe_query,
+                results=(),
+                error="；".join(errors) or "备用搜索没有返回可用结果",
+                source="duckduckgo",
+            )
         bing_fallback = self.search(safe_query, max_results=limit)
         if bing_fallback.results:
             return bing_fallback
@@ -621,6 +667,125 @@ class WebSearchService:
             error=f"{error}；必应回退失败：{fallback_error}",
             source="bing",
         )
+
+    def _search_bocha(
+        self,
+        query: str,
+        *,
+        max_results: int,
+    ) -> WebSearchResponse:
+        if not self._bocha_api_key:
+            return WebSearchResponse(
+                query=query,
+                results=(),
+                error="博查搜索未配置：缺少 BOCHA_API_KEY",
+                source="bocha",
+            )
+        if not self._bocha_search_url.startswith("https://"):
+            return WebSearchResponse(
+                query=query,
+                results=(),
+                error="博查搜索地址必须使用 HTTPS",
+                source="bocha",
+            )
+        limit = min(max(1, max_results), 8)
+        cache_key = f"bocha:{query.casefold()}"
+        cached = self._get_cached(cache_key, limit)
+        if cached is not None:
+            return WebSearchResponse(
+                query=query,
+                results=cached,
+                cached=True,
+                source="bocha",
+            )
+        self._wait_for_rate_limit()
+        try:
+            response = self._bocha_request(query, count=limit)
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException:
+            error = "博查搜索超时"
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                error = "博查搜索鉴权失败，请检查 BOCHA_API_KEY"
+            else:
+                error = f"博查搜索返回 HTTP {exc.response.status_code}"
+        except httpx.HTTPError as exc:
+            error = f"博查搜索连接失败：{type(exc).__name__}"
+        except ValueError:
+            error = "博查搜索返回了无法解析的响应"
+        else:
+            if not isinstance(payload, dict) or payload.get("code") != 200:
+                message = payload.get("msg") if isinstance(payload, dict) else None
+                error = f"博查搜索失败：{message or '响应状态异常'}"
+            else:
+                data = payload.get("data")
+                web_pages = data.get("webPages") if isinstance(data, dict) else None
+                values = web_pages.get("value") if isinstance(web_pages, dict) else None
+                parsed_results: list[WebSearchResult] = []
+                for item in values if isinstance(values, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    title = _collapse_whitespace(str(item.get("name") or ""))
+                    url = _normalize_result_url(str(item.get("url") or ""))
+                    snippet = _collapse_whitespace(str(item.get("snippet") or ""))
+                    summary = _collapse_whitespace(str(item.get("summary") or ""))
+                    if not title or not url:
+                        continue
+                    parsed_results.append(
+                        WebSearchResult(
+                            title=title[:200],
+                            url=url[:2048],
+                            snippet=(snippet or summary)[:500],
+                            content=summary[:8_000],
+                            source="bocha",
+                        )
+                    )
+                results = tuple(_deduplicate(parsed_results)[:limit])
+                if results:
+                    with self._lock:
+                        self._cache[cache_key] = (monotonic(), results)
+                        self._cache.move_to_end(cache_key)
+                        while len(self._cache) > self._search_cache_max_entries:
+                            self._cache.popitem(last=False)
+                    return WebSearchResponse(
+                        query=query,
+                        results=results,
+                        source="bocha",
+                    )
+                error = "博查搜索没有返回可用网页结果"
+        return WebSearchResponse(
+            query=query,
+            results=(),
+            error=error,
+            source="bocha",
+        )
+
+    def _bocha_request(self, query: str, *, count: int) -> httpx.Response:
+        headers = {
+            "Authorization": f"Bearer {self._bocha_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "query": query,
+            "summary": True,
+            "freshness": "noLimit",
+            "count": count,
+        }
+        if self._client is not None:
+            return self._client.post(
+                self._bocha_search_url,
+                headers=headers,
+                json=payload,
+                timeout=15,
+            )
+        with httpx.Client(follow_redirects=False) as client:
+            return client.post(
+                self._bocha_search_url,
+                headers=headers,
+                json=payload,
+                timeout=15,
+            )
 
     def search_domestic(
         self,
@@ -769,7 +934,9 @@ class WebSearchService:
         limit = min(max(0, max_pages), 3)
         enriched: list[WebSearchResult] = []
         for index, result in enumerate(results):
-            content = self._fetch_page(result.url) if index < limit else ""
+            content = result.content
+            if not content and index < limit:
+                content = self._fetch_page(result.url)
             enriched.append(
                 WebSearchResult(
                     title=result.title,

@@ -183,7 +183,7 @@ def test_chat_returns_web_sources_from_agent(client) -> None:
             "title": "公开信息",
             "url": "https://example.gov.cn/information",
             "snippet": "公开信息摘要",
-            "source": "bing",
+                "source": "bocha",
         }
     ]
 

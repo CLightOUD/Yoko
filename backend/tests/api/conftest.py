@@ -81,7 +81,7 @@ class FakeAgent:
                 ToolCallView(
                     tool_name="web_search",
                     status="success",
-                    summary="模拟必应查询",
+                    summary="模拟博查查询",
                     latency_ms=1,
                 )
             ]

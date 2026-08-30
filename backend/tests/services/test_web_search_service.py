@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from urllib.parse import quote
 
 import httpx
@@ -63,6 +64,72 @@ def test_bing_search_parses_deduplicates_and_caches_results() -> None:
     assert first.results[0].snippet == "这是 第一条 摘要。"
     assert second.cached is True
     assert len(second.results) == 1
+
+
+def test_configured_search_requires_bocha_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("BOCHA_API_KEY", raising=False)
+    service = WebSearchService.configured()
+
+    result = service.search("大连理工大学")
+
+    assert result.results == ()
+    assert result.error == "博查搜索未配置：缺少 BOCHA_API_KEY"
+    assert result.source == "bocha"
+
+
+def test_bocha_search_posts_structured_request_parses_summary_and_caches() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.bocha.cn/v1/web-search"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert json.loads(request.content) == {
+            "query": "大连理工大学 学校简介",
+            "summary": True,
+            "freshness": "noLimit",
+            "count": 5,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "log_id": "test-log",
+                "msg": None,
+                "data": {
+                    "webPages": {
+                        "value": [
+                            {
+                                "name": "学校简介-大连理工大学",
+                                "url": "https://www.dlut.edu.cn/xxgk/xxjj.htm",
+                                "snippet": "教育部直属全国重点大学。",
+                                "summary": "学校设有多个校区，以人才培养和科学研究为主要任务。",
+                            }
+                        ]
+                    }
+                },
+            },
+            request=request,
+        )
+
+    service = WebSearchService(
+        client=_client(handler),
+        minimum_interval_seconds=0,
+        bocha_api_key="test-key",
+        use_bocha=True,
+    )
+    first = service.search("大连理工大学 学校简介")
+    second = service.search_alternative("大连理工大学 学校简介")
+
+    assert calls == 1
+    assert first.error is None
+    assert first.source == "bocha"
+    assert first.results[0].source == "bocha"
+    assert first.results[0].snippet == "教育部直属全国重点大学。"
+    assert "多个校区" in first.results[0].content
+    assert second.cached is True
 
 
 def test_duckduckgo_search_unwraps_redirects_and_caches_results() -> None:

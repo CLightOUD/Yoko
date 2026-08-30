@@ -320,7 +320,14 @@ def test_chat_response_matches_memory_metrics_and_tool_status() -> None:
         url="https://example.gov.cn/policy",
         snippet="公开政策摘要",
     )
-    assert source.source == "bing"
+    assert source.source == "bocha"
+    bocha_source = schemas.WebSource(
+        title="结构化搜索结果",
+        url="https://example.com/information",
+        snippet="博查返回的网页摘要",
+        source="bocha",
+    )
+    assert bocha_source.source == "bocha"
     alternative_source = schemas.WebSource(
         title="玩家评价",
         url="https://example.com/review",

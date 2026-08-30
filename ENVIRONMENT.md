@@ -112,10 +112,11 @@ OPENAI_BASE_URL=<OpenAI兼容接口地址>
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `WEB_SEARCH_360_ENABLED` | `true` | 360 国内备用搜索 |
-| `WEB_SEARCH_DDG_ENABLED` | `true` | DuckDuckGo 备用搜索 |
+| `BOCHA_API_KEY` | 无 | 博查开放平台 API Key；联网查询必填 |
+| `BOCHA_SEARCH_URL` | `https://api.bocha.cn/v1/web-search` | 博查 Web Search 接口地址 |
 
-必应为首轮来源，无需 API Key。免费网页搜索可能受网络、验证码和页面变化影响。
+联网查询使用博查 Web Search API。密钥应在博查开放平台创建，只能放入本地 `.env`
+或部署平台的加密环境变量，不能提交到 Git。
 
 ### Web Push
 
