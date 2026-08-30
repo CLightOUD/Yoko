@@ -93,6 +93,7 @@ def test_duckduckgo_search_unwraps_redirects_and_caches_results() -> None:
         cache_ttl_seconds=60,
         minimum_interval_seconds=0,
         duckduckgo_enabled=True,
+        so360_enabled=False,
     )
     first = service.search_alternative("原神 玩家评价 口碑")
     second = service.search_alternative("原神 玩家评价 口碑")
@@ -120,6 +121,7 @@ def test_alternative_search_uses_bing_when_duckduckgo_is_disabled() -> None:
         client=_client(handler),
         minimum_interval_seconds=0,
         duckduckgo_enabled=False,
+        so360_enabled=False,
     )
     result = service.search_alternative("原神 当前版本")
 
@@ -145,6 +147,7 @@ def test_duckduckgo_connection_failure_falls_back_to_bing() -> None:
         client=_client(handler),
         minimum_interval_seconds=0,
         duckduckgo_enabled=True,
+        so360_enabled=False,
     )
     result = service.search_alternative("原神 当前版本")
 
@@ -152,6 +155,47 @@ def test_duckduckgo_connection_failure_falls_back_to_bing() -> None:
     assert result.error is None
     assert result.source == "bing"
     assert result.results[0].title == "当前版本"
+
+
+def test_alternative_search_prefers_360_and_uses_original_target_url() -> None:
+    calls = 0
+    html = """
+    <div data-pcurl="https://www.dlut.edu.cn/xxgk/xxjj.htm"
+         class="g-card res-list mso">
+      <a href="https://m.so.com/jump?u=redirect">
+        <h3 class="res-title">学校简介-<em>大连理工大学</em></h3>
+      </a>
+      <div class="con"><div class="summary">
+        学校是教育部直属的全国重点大学，设有多个校区。
+      </div></div>
+    </div>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.host == "m.so.com"
+        assert request.url.params["q"] == "大连理工大学 学校简介"
+        return httpx.Response(200, text=html, request=request)
+
+    service = WebSearchService(
+        client=_client(handler),
+        cache_ttl_seconds=60,
+        minimum_interval_seconds=0,
+        duckduckgo_enabled=True,
+        so360_enabled=True,
+    )
+    first = service.search_alternative("大连理工大学 学校简介")
+    second = service.search_alternative("大连理工大学 学校简介")
+
+    assert calls == 1
+    assert first.error is None
+    assert first.source == "so360"
+    assert first.results[0].source == "so360"
+    assert first.results[0].title == "学校简介- 大连理工大学"
+    assert first.results[0].url == "https://www.dlut.edu.cn/xxgk/xxjj.htm"
+    assert "教育部直属" in first.results[0].snippet
+    assert second.cached is True
 
 
 def test_search_cache_can_expand_after_an_initial_smaller_result_limit() -> None:

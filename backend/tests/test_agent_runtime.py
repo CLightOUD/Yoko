@@ -329,6 +329,7 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
         search_query="乙机构 2026 申请条件 官方",
         required_evidence=["适用对象", "申请条件", "有效时间"],
         freshness_required=True,
+        freshness_evidence="今年",
         preferred_source_types=["机构官网"],
         confidence=0.97,
         reason="当前消息只替换机构，继承年份和主题",
@@ -405,6 +406,46 @@ def test_semantic_preprocessor_does_not_add_freshness_to_generic_information_req
     assert result.frame.normalized_text == "查询大连理工大学的信息"
     assert "不能把泛指的" in calls[0][0].content
     assert "最新消息" in calls[0][0].content
+
+
+def test_search_planner_removes_ungrounded_freshness_from_overview() -> None:
+    plan = SearchPlan(
+        standalone_question="查询大连理工大学的最新新闻",
+        core_subject="大连理工大学",
+        search_query="大连理工大学 最新 新闻",
+        fallback_query="大连理工大学 近期动态",
+        answer_scope="overview",
+        required_evidence=["近期的重要新闻或动态"],
+        freshness_required=True,
+        freshness_evidence="最新",
+        confidence=0.92,
+        reason="把口语消息理解成最新消息",
+    )
+
+    class StructuredModel:
+        def invoke(self, messages):
+            assert "必须逐字引用" in messages[0].content
+            return {"raw": AIMessage(content=""), "parsed": plan}
+
+    class FakeModel:
+        def with_structured_output(self, schema, **kwargs):
+            assert schema is SearchPlan
+            return StructuredModel()
+
+    result = ORIGINAL_PLAN_WEB_SEARCH(
+        model=FakeModel(),
+        now=datetime(2026, 8, 30, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        timezone="Asia/Shanghai",
+        normalized_request="搜索大连理工大学的消息",
+        history=[{"role": "user", "content": "搜索大连理工大学的消息"}],
+    )
+
+    assert result.plan.freshness_required is False
+    assert result.plan.freshness_evidence is None
+    assert result.plan.standalone_question == "介绍大连理工大学的基本信息"
+    assert result.plan.search_query == "大连理工大学"
+    assert result.plan.fallback_query == "大连理工大学 官方 简介"
+    assert result.plan.required_evidence == ["大连理工大学的基本概况"]
 
 
 def test_vision_context_marks_image_text_as_observation_data() -> None:

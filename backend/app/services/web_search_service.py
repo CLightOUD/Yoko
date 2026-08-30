@@ -24,7 +24,7 @@ class WebSearchResult:
     url: str
     snippet: str
     content: str = ""
-    source: Literal["bing", "duckduckgo"] = "bing"
+    source: Literal["bing", "duckduckgo", "so360"] = "bing"
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class WebSearchResponse:
     results: tuple[WebSearchResult, ...]
     cached: bool = False
     error: str | None = None
-    source: Literal["bing", "duckduckgo"] = "bing"
+    source: Literal["bing", "duckduckgo", "so360"] = "bing"
 
 
 class _PageTooLargeError(ValueError):
@@ -246,6 +246,118 @@ class _DuckDuckGoResultsParser(HTMLParser):
         self._snippet_depth = 0
 
 
+class _So360ResultsParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[WebSearchResult] = []
+        self._current: dict[str, object] | None = None
+        self._container_tag = ""
+        self._list_depth = 0
+        self._heading_depth = 0
+        self._link_depth = 0
+        self._snippet_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if (
+            tag in {"li", "div"}
+            and self._current is None
+            and "res-list" in classes
+        ):
+            self._current = {
+                "title": [],
+                "url": attributes.get("data-pcurl") or "",
+                "snippet": [],
+            }
+            self._container_tag = tag
+            self._list_depth = 1
+            return
+        if self._current is None:
+            return
+        if tag == self._container_tag:
+            self._list_depth += 1
+        if self._snippet_depth:
+            self._snippet_depth += 1
+        elif classes.intersection(
+            {"summary", "res-summary", "res-list-summary", "res-desc"}
+        ):
+            self._snippet_depth = 1
+        if tag == "h3":
+            self._heading_depth += 1
+        elif tag == "a" and self._heading_depth:
+            self._link_depth += 1
+            if not self._current["url"]:
+                self._current["url"] = (
+                    attributes.get("data-mdurl")
+                    or attributes.get("href")
+                    or ""
+                )
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._current is None:
+            return
+        if self._snippet_depth:
+            self._snippet_depth -= 1
+        if tag == "a" and self._link_depth:
+            self._link_depth -= 1
+        elif tag == "h3" and self._heading_depth:
+            self._heading_depth -= 1
+        elif tag == self._container_tag:
+            self._list_depth -= 1
+            if self._list_depth == 0:
+                self._finish_result()
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None:
+            return
+        text = _collapse_whitespace(data)
+        if not text:
+            return
+        if self._heading_depth:
+            title = self._current["title"]
+            assert isinstance(title, list)
+            title.append(text)
+        elif self._snippet_depth:
+            snippet = self._current["snippet"]
+            assert isinstance(snippet, list)
+            snippet.append(text)
+
+    def close(self) -> None:
+        super().close()
+        if self._current is not None:
+            self._finish_result()
+
+    def _finish_result(self) -> None:
+        assert self._current is not None
+        title_parts = self._current["title"]
+        snippet_parts = self._current["snippet"]
+        assert isinstance(title_parts, list)
+        assert isinstance(snippet_parts, list)
+        title = _collapse_whitespace(" ".join(title_parts))
+        snippet = _collapse_whitespace(" ".join(snippet_parts))
+        url = _normalize_result_url(str(self._current["url"]))
+        if title and url:
+            self.results.append(
+                WebSearchResult(
+                    title=title[:200],
+                    url=url[:2048],
+                    snippet=snippet[:500],
+                    source="so360",
+                )
+            )
+        self._current = None
+        self._container_tag = ""
+        self._list_depth = 0
+        self._heading_depth = 0
+        self._link_depth = 0
+        self._snippet_depth = 0
+
+
 class _ReadableTextParser(HTMLParser):
     _SKIPPED_TAGS = frozenset(
         {"script", "style", "noscript", "svg", "template", "canvas"}
@@ -316,6 +428,7 @@ class _ReadableTextParser(HTMLParser):
 class WebSearchService:
     SEARCH_URL = "https://www.bing.com/search"
     ALTERNATIVE_SEARCH_URL = "https://html.duckduckgo.com/html/"
+    DOMESTIC_SEARCH_URL = "https://m.so.com/s"
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -331,6 +444,7 @@ class WebSearchService:
         search_cache_max_entries: int = 128,
         page_cache_max_entries: int = 256,
         duckduckgo_enabled: bool | None = None,
+        so360_enabled: bool | None = None,
     ) -> None:
         self._client = client
         self._cache_ttl_seconds = max(0, cache_ttl_seconds)
@@ -341,6 +455,11 @@ class WebSearchService:
             _env_flag("WEB_SEARCH_DDG_ENABLED", default=True)
             if duckduckgo_enabled is None
             else duckduckgo_enabled
+        )
+        self._so360_enabled = (
+            _env_flag("WEB_SEARCH_360_ENABLED", default=True)
+            if so360_enabled is None
+            else so360_enabled
         )
         self._cache: OrderedDict[
             str, tuple[float, tuple[WebSearchResult, ...]]
@@ -433,9 +552,24 @@ class WebSearchService:
                 error="搜索词为空或只包含了被移除的敏感信息",
                 source="duckduckgo",
             )
-        if not self._duckduckgo_enabled:
-            return self.search(safe_query, max_results=max_results)
         limit = min(max(1, max_results), 5)
+        domestic_error: str | None = None
+        if self._so360_enabled:
+            domestic = self.search_domestic(safe_query, max_results=limit)
+            if domestic.results:
+                return domestic
+            domestic_error = domestic.error
+        if not self._duckduckgo_enabled:
+            bing_fallback = self.search(safe_query, max_results=limit)
+            if bing_fallback.results:
+                return bing_fallback
+            errors = [item for item in (domestic_error, bing_fallback.error) if item]
+            return WebSearchResponse(
+                query=safe_query,
+                results=(),
+                error="；".join(errors) or "备用搜索没有返回可用结果",
+                source="bing",
+            )
         cache_key = f"duckduckgo:{safe_query.casefold()}"
         cached = self._get_cached(cache_key, limit)
         if cached is not None:
@@ -488,6 +622,69 @@ class WebSearchService:
             source="bing",
         )
 
+    def search_domestic(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+    ) -> WebSearchResponse:
+        safe_query = _sanitize_query(query)
+        if not safe_query:
+            return WebSearchResponse(
+                query="",
+                results=(),
+                error="搜索词为空或只包含了被移除的敏感信息",
+                source="so360",
+            )
+        limit = min(max(1, max_results), 5)
+        cache_key = f"so360:{safe_query.casefold()}"
+        cached = self._get_cached(cache_key, limit)
+        if cached is not None:
+            return WebSearchResponse(
+                query=safe_query,
+                results=cached,
+                cached=True,
+                source="so360",
+            )
+
+        self._wait_for_rate_limit()
+        try:
+            response = self._domestic_request(safe_query)
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            error = "360 搜索超时"
+        except httpx.HTTPStatusError as exc:
+            error = f"360 搜索返回 HTTP {exc.response.status_code}"
+        except httpx.HTTPError as exc:
+            error = f"360 搜索连接失败：{type(exc).__name__}"
+        else:
+            lowered = response.text.casefold()
+            if "安全验证" in response.text or "captcha" in lowered:
+                error = "360 搜索要求完成人机验证"
+            else:
+                parser = _So360ResultsParser()
+                parser.feed(response.text)
+                parser.close()
+                results = tuple(_deduplicate(parser.results)[:5])
+                if results:
+                    with self._lock:
+                        self._cache[cache_key] = (monotonic(), results)
+                        self._cache.move_to_end(cache_key)
+                        while len(self._cache) > self._search_cache_max_entries:
+                            self._cache.popitem(last=False)
+                    return WebSearchResponse(
+                        query=safe_query,
+                        results=results[:limit],
+                        source="so360",
+                    )
+                error = "360 搜索没有返回可解析的搜索结果"
+        return WebSearchResponse(
+            query=safe_query,
+            results=(),
+            error=error,
+            source="so360",
+        )
+
     def _request(self, query: str) -> httpx.Response:
         parameters = {
             "q": query,
@@ -532,6 +729,32 @@ class WebSearchService:
         with httpx.Client(follow_redirects=True) as client:
             return client.get(
                 self.ALTERNATIVE_SEARCH_URL,
+                params=parameters,
+                headers=headers,
+                timeout=10,
+            )
+
+    def _domestic_request(self, query: str) -> httpx.Response:
+        parameters = {"q": query}
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Mobile Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.5",
+        }
+        if self._client is not None:
+            return self._client.get(
+                self.DOMESTIC_SEARCH_URL,
+                params=parameters,
+                headers=headers,
+                timeout=10,
+            )
+        with httpx.Client(follow_redirects=True) as client:
+            return client.get(
+                self.DOMESTIC_SEARCH_URL,
                 params=parameters,
                 headers=headers,
                 timeout=10,

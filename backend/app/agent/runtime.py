@@ -247,6 +247,7 @@ class SearchPlan(BaseModel):
     answer_scope: Literal["overview", "specific"] = "specific"
     required_evidence: list[str] = Field(default_factory=list, max_length=6)
     freshness_required: bool = False
+    freshness_evidence: str | None = Field(default=None, max_length=80)
     preferred_source_types: list[str] = Field(default_factory=list, max_length=4)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=200)
@@ -715,6 +716,7 @@ class LangChainAgent:
                 search_label = {
                     "bing": "必应",
                     "duckduckgo": "DuckDuckGo",
+                    "so360": "360 搜索",
                 }[search_response.source]
                 tool_calls.append(
                     ToolCallView(
@@ -1654,7 +1656,10 @@ class LangChainAgent:
             "用户明确询问版本号、日期、金额、条件、状态等可核验事实时填 specific。不得用关键词"
             "白名单代替语义判断。overview 允许只基于已经核实的部分资料形成有限概览，specific"
             "则必须覆盖用户实际询问的关键事实。"
-            "freshness_required 表示答案是否依赖当前或近期信息。"
+            "freshness_required 表示答案是否依赖当前或近期信息。为 true 时，freshness_evidence"
+            "必须逐字引用用户原始对话中表达时效要求的最短片段；不能引用 normalized_request、"
+            "助手消息或自行改写的近义词。找不到原文片段时 freshness_required 必须为 false，"
+            "freshness_evidence 必须为 null。"
             "fallback_query 是第一轮结果无关或证据不足时使用的高召回备选词：只保留核心主题、"
             "对象、地点和来源类别，主动去掉一个可能压低召回率的日期、型号、版本或过窄限定；"
             "它不能与 search_query 相同，也不能丢掉问题主题。没有合理备选时才填 null。"
@@ -1700,6 +1705,35 @@ class LangChainAgent:
                 f"联网查询规划未返回有效结构：{response.get('parsing_error')}"
             )
         plan = SearchPlan.model_validate(parsed)
+        user_text = "\n".join(
+            str(item["content"])
+            for item in history
+            if item["role"] == "user"
+        ).casefold()
+        freshness_evidence = (plan.freshness_evidence or "").strip()
+        freshness_is_grounded = bool(
+            freshness_evidence
+            and freshness_evidence.casefold() in user_text
+        )
+        if plan.freshness_required and not freshness_is_grounded:
+            updates: dict[str, object] = {
+                "freshness_required": False,
+                "freshness_evidence": None,
+                "reason": (
+                    "已移除无法在用户原始对话中定位的时效要求。"
+                    f"原判断：{plan.reason}"
+                )[:200],
+            }
+            if plan.answer_scope == "overview" and plan.core_subject:
+                updates.update(
+                    {
+                        "standalone_question": f"介绍{plan.core_subject}的基本信息",
+                        "search_query": plan.core_subject,
+                        "fallback_query": f"{plan.core_subject} 官方 简介",
+                        "required_evidence": [f"{plan.core_subject}的基本概况"],
+                    }
+                )
+            plan = plan.model_copy(update=updates)
         raw = response.get("raw")
         return SearchPlanResult(
             plan=plan,
