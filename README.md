@@ -1,314 +1,187 @@
-# Yoko
-YOur Kins Online -- Agent designed for elderly people.
+# Yoko：具备反馈记忆能力的适老陪伴 Agent
 
-API contract: [API_SPEC.md](API_SPEC.md)
+Yoko（YOur Kins Online）是一个面向老年人的轻量 Agent 系统。它以“反馈记忆”为核心：理解用户的任务与自然语言表达，规划并调用提醒、联网查询等工具；当用户明确表达长期偏好、补充个人事实或修正结果后，系统会沉淀可管理的记忆，并在后续相似任务中自动检索和使用。
 
-## Development environment
+本项目对应的真实场景是适老陪伴与生活提醒。老年用户可以用口语、错别字和多轮补充表达需求，Yoko 负责澄清关键歧义、创建或修改提醒，并逐渐记住回答风格、常用提醒时间、提前量和人物关系等信息。
 
-- Windows 10 or 11
-- Python 3.11
-- Node.js 24 LTS or another supported LTS release
-- FastAPI, LangChain, React, Vite and SQLite
+## 赛题对应关系
 
-Activate a Python 3.11 environment, then install the dependencies from the
-repository root:
+| 赛题要求 | Yoko 的实现 |
+| --- | --- |
+| 基础 Agent 流程 | 语义预处理、任务规划、工具调用、结果生成和事务提交 |
+| 从反馈持续改进 | 聊天中的明确长期偏好和 `/api/feedback` 修正均可生成记忆 |
+| 自动检索相关记忆 | 每轮聊天从当前用户的有效记忆中构造最多 10 条候选，再由模型选择实际使用项 |
+| 在结果中体现记忆 | 使用过的记忆 ID 会进入 `used_memory_ids`，影响回复风格或提醒参数，并在响应中标记 `used=true` |
+| 真实应用场景 | 适老陪伴、服药/散步/预约提醒、联网查资料、图片理解 |
+| 记忆成本 | 单独记录 `memory_tokens`、检索耗时、检索数量和实际使用数量 |
+| 对话速度 | 记录模型、工具、检索和总耗时；限制历史、候选记忆和并发数量 |
+| 记忆效果 | 返回检索记忆、实际使用记忆与记忆变更，可通过指标接口和真实模型评测核对 |
+
+## 核心闭环
+
+```text
+用户输入
+  -> 读取最近对话和最多 10 条候选记忆
+  -> 结构化语义预处理（意图、歧义、撤销、安全、联网需求）
+  -> 主 Agent 规划并调用工具
+  -> 生成回复和结构化记忆候选
+  -> 校验记忆是否有用户原文依据
+  -> 在同一 SQLite 事务中提交提醒、记忆、消息、指标和幂等响应
+  -> 后续相似任务自动检索并使用相关记忆
+```
+
+系统坚持三个原则：
+
+1. 用户原文是事实来源，关键词本身不能直接触发提醒写入。
+2. “检索到”不等于“使用过”，只有实际影响回复或工具参数的记忆才会标记为已使用。
+3. 临时要求、否定表达、无明确长期意义的评分不会被强行保存。
+
+## 记忆设计
+
+### 记忆类型
+
+- 全局记忆：回答风格、默认语言等跨任务偏好。
+- 任务记忆：服药、散步、预约等场景的常用时间或提前量。
+- 其他事实：用户明确要求记住的人物关系、称呼和普通个人事实。
+
+每条记忆包含作用域、任务类型、键、值、展示文本、来源消息、启用状态、创建/更新时间和最后使用时间。用户可以在网页中停用、重新启用、修改或永久删除记忆。
+
+### 记忆产生
+
+记忆有两个入口：
+
+1. 聊天入口：主 Agent 从明确的长期表达中生成结构化候选，例如“记住，以后回答简洁一点”。候选必须能被近期用户原文支持。
+2. 反馈入口：用户对某次回答提交文字反馈或修正结果。明确长期偏好由确定性提取器处理，不额外调用模型；重复反馈通过摘要键去重。
+
+### 记忆检索与使用
+
+每轮只读取当前账号的有效记忆，并将候选池限制为最多 10 条。候选池会保留任务多样性，并优先保留当前输入中明确提及人物的相关事实。主 Agent 只能返回真正影响本轮结果的记忆 ID；系统再校验 ID 是否来自本轮候选池。
+
+这一设计不依赖向量数据库，适合黑客松规模和单用户少量偏好：部署简单、检索时间稳定、没有额外嵌入费用。数据规模扩大后，可将候选检索替换为 SQLite FTS 或向量检索，而不改变 API。
+
+## 真实使用示例
+
+```text
+用户：记住，我以后散步一般都在晚上七点。
+Yoko：已记住散步提醒时间偏好为 19:00。
+
+几天后
+用户：提醒我明天去散步。
+Yoko：检索到散步时间偏好，并按明天 19:00 准备提醒。
+
+用户：以后回复短一点，这次说得太长了。
+Yoko：保存“回答风格偏好为简短清晰”，后续回答自动采用更简洁的表达。
+```
+
+当日期、星期、上午/下午等关键信息仍有歧义时，系统会优先澄清，不会为了体现记忆而猜测。
+
+## Agent 与工具
+
+- 提醒工具：查询、创建、修改、删除提醒；支持单次、每日和每周周期。
+- 联网查询：必应首轮检索，证据不足时尝试 360、DuckDuckGo 并回退必应；所有结果经过相关性和证据门禁。
+- 图片理解：独立视觉模型提取图片观察，再由主 Agent 结合用户文字处理；图片中的指令不视为用户授权。
+- Web Push：可选的到期提醒推送，支持浏览器订阅、失效端点停用和重试。
+
+提醒写操作采用延迟提交：Agent 先形成计划，系统校验用户证据、时间、操作数量和当前数据库状态，最后才在事务中落库。相同聊天请求使用 `Idempotency-Key` 去重，避免网络重试造成重复提醒。
+
+## 成本、速度与效果指标
+
+每次聊天响应包含：
+
+- `model_call_count`
+- `input_tokens` / `output_tokens`
+- `memory_tokens`
+- `retrieved_memory_count` / `used_memory_count`
+- `retrieval_ms` / `model_ms` / `tool_ms` / `total_ms`
+
+`GET /api/metrics/summary` 可按时间范围汇总请求数、模型调用数、Token、记忆 Token、平均检索耗时、平均模型耗时和记忆命中情况。
+
+为了控制成本和延迟，当前实现限制最近对话长度、记忆候选数量、搜索结果与重试次数、单实例并发聊天数和账号请求频率。
+
+## 项目结构
+
+```text
+Yoko/
+├── backend/
+│   ├── app/
+│   │   ├── agent/          # 语义预处理、Agent、工具与记忆决策
+│   │   ├── api/            # FastAPI 路由
+│   │   ├── repositories/   # SQLite 数据访问
+│   │   ├── schemas/        # Pydantic 输入输出模型
+│   │   └── services/       # 聊天、反馈、记忆、提醒、搜索等服务
+│   └── tests/              # 单元、接口和真实模型评测
+├── frontend/               # React + Vite 适老网页
+├── TECH_STACK.md           # 技术栈与选择依据
+├── ENVIRONMENT.md          # 环境与变量配置
+├── RUN_DEPLOY.md           # 本地运行与验证
+├── requirements.txt
+└── entrypoint.sh
+```
+
+## 快速开始
+
+推荐环境：Windows 10/11、Python 3.11、Node.js LTS、npm。
 
 ```powershell
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-Set-Location .\frontend
-npm.cmd ci
-Set-Location ..
+npm.cmd --prefix frontend ci
 ```
 
-## Backend
-
-Open PowerShell in the repository root and run:
+填写 `.env` 中的模型名称、API Key 和兼容 OpenAI 的 Base URL，然后分别启动：
 
 ```powershell
+# 终端 1：仓库根目录
 python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+
+# 终端 2：仓库根目录
+npm.cmd --prefix frontend run dev
 ```
 
-Keep this terminal open, then visit the API documentation:
-<http://127.0.0.1:8000/docs>
+访问：
 
-The backend applies versioned SQLite migrations during application startup. A
-legacy database is backed up before compatibility cleanup. Reminder,
-memory, feedback, metrics and chat endpoints are listed in `API_SPEC.md` and
-the generated API documentation. `/api/chat` requires `MODEL_NAME` and model
-credentials; the other endpoints can run without an LLM key.
+- 网页：<http://127.0.0.1:5173>
+- API 文档：<http://127.0.0.1:8000/docs>
+- 健康检查：<http://127.0.0.1:8000/api/health>
+- 就绪检查：<http://127.0.0.1:8000/api/ready>
 
-Account authentication is active in API contract version `0.6.0`. Registration
-and login issue a fixed 180-day HttpOnly session cookie backed by the V5 SQLite
-schema. Chat, feedback, reminder, memory, and metrics endpoints require that
-session and derive ownership on the server; a client-supplied `user_id` is
-ignored during the temporary frontend transition. State-changing requests also
-require the configured frontend origin or the API's own origin.
+接口结构以 Pydantic 模型和 FastAPI 自动生成的 `/openapi.json` 为准。
 
-`GET /api/health` is the process liveness check and `GET /api/ready` verifies
-the database, migration version, and local model-client configuration without
-sending a model request. Chat clients must send an `Idempotency-Key` header and
-must reuse it when retrying the same request. Active executions renew their
-lease, and stale attempts cannot commit over a newer retry.
+完整配置见 [ENVIRONMENT.md](ENVIRONMENT.md)，运行与测试方式见 [RUN_DEPLOY.md](RUN_DEPLOY.md)。
 
-Each chat turn first runs a structured semantic-preprocessing model call and
-then the main Agent. The resulting `SemanticFrame` marks the final operation,
-self-corrections, cancellation, ambiguity, evidence message numbers and
-confidence. Reminder writes are staged and execute only after the final Agent
-decision agrees with that frame. The reminder mutation, memory changes,
-assistant message, metrics, and idempotent response then commit in one SQLite
-transaction. A deterministic guard also verifies real
-message numbers, at most one mutation, list-before-update/delete and retrieved
-`preferred_time` memory IDs. The original user text remains the source of truth.
-
-Run tests:
+## 测试
 
 ```powershell
 python -m pytest backend\tests -q
+npm.cmd --prefix frontend test
+npm.cmd --prefix frontend run lint
+npm.cmd --prefix frontend run build
 ```
 
-After configuring `.env`, run one real-model smoke test. It uses a temporary
-database and does not modify `backend/data/app.db`:
+配置真实模型后，可运行使用临时数据库的冒烟测试：
 
 ```powershell
 python -m backend.tests.evaluation.run_live_model_smoke
-```
-
-运行一次真实模型加必应联网的端到端冒烟测试：
-
-```powershell
 python -m backend.tests.evaluation.run_live_web_search_smoke
 ```
 
-Run the strict live evaluation for typos, ambiguous requests, corrections,
-prompt injection, medication safety, idempotency and memory overrides:
+高难度对话和攻击评测会产生真实模型费用，仅在确认预算后运行：
 
 ```powershell
 python -m backend.tests.evaluation.run_live_stress_evaluation
-```
-
-Run the multi-turn high-difficulty evaluation where date, clock, recurrence
-and preference fields contain realistic input errors and corrections:
-
-```powershell
 python -m backend.tests.evaluation.run_live_dialogue_evaluation
-```
-
-Run the tracked 40-turn adversarial protocol only after approving real-model
-costs. It validates that each attack objective was actually materialized before
-scoring and uses a temporary registered account and database:
-
-```powershell
 python -m backend.tests.evaluation.run_live_adversarial_evaluation
 ```
 
-## Frontend
+## 文档
 
-```powershell
-Set-Location .\frontend
-npm.cmd run dev
-```
+- [技术栈与选型](TECH_STACK.md)
+- [环境配置](ENVIRONMENT.md)
+- [运行与测试](RUN_DEPLOY.md)
 
-Frontend URL: <http://127.0.0.1:5173>
+## 当前边界
 
-## Environment variables
-
-The local `.env` file has been created with empty model credentials. Fill in
-`MODEL_NAME`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL` when required. Never
-commit `.env`.
-
-Image understanding uses the independent `VISION_MODEL_NAME`,
-`VISION_API_KEY`, and `VISION_BASE_URL` settings. If the vision key or base URL
-is empty, the corresponding `OPENAI_*` setting is used as a compatibility
-fallback. Image requests are never sent to LangSmith tracing.
-
-Authentication defaults are:
-
-```text
-SESSION_TTL_DAYS=180
-AUTH_COOKIE_SECURE=false
-AUTH_COOKIE_NAME=yoko_session
-```
-
-Production HTTPS must use `AUTH_COOKIE_SECURE=true` and the
-`__Host-yoko_session` cookie name.
-
-The backend also provides password change, JSON account export, and confirmed
-account deletion endpoints. API requests include security headers and are
-rate-limited in process for the current single-instance SQLite deployment. The
-limits can be configured with the `RATE_LIMIT_*` variables in `.env.example`.
-
-Create a consistent SQLite backup (and retain the newest 14 files) with:
-
-```powershell
-python -m backend.scripts.backup_database --keep 14
-```
-
----
-
-# 中文说明
-
-Yoko（YOur Kins Online）是一个面向老年人的 Agent 系统。
-
-API 接口规范：[API_SPEC.md](API_SPEC.md)
-
-## 开发环境
-
-- Windows 10 或 Windows 11
-- Python 3.11
-- Node.js 24 LTS 或其他仍受支持的 LTS 版本
-- FastAPI、LangChain、React、Vite 和 SQLite
-
-激活 Python 3.11 环境，然后在仓库根目录安装依赖：
-
-```powershell
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-Set-Location .\frontend
-npm.cmd ci
-Set-Location ..
-```
-
-## 后端
-
-在仓库根目录打开 PowerShell 并运行：
-
-```powershell
-python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-保持该终端运行，然后访问 API 文档：
-<http://127.0.0.1:8000/docs>
-
-后端会在应用启动时顺序执行版本化 SQLite 迁移；旧版数据库在兼容清理前会自动
-生成备份。提醒、记忆、反馈、指标和聊天接口见
-`API_SPEC.md` 及自动生成的 API 文档。`/api/chat` 需要配置 `MODEL_NAME` 和模型
-凭据，其他接口不依赖大模型密钥即可运行。
-
-账号认证已在接口合同 `0.6.0` 中启用。注册和登录使用 V5 SQLite 数据结构签发
-固定 180 天的 HttpOnly Session Cookie。聊天、反馈、提醒、记忆和指标接口都要求
-有效 Session，资源归属由后端确定；前端过渡期间多传的 `user_id` 会被忽略。
-所有写请求还必须来自配置的前端 Origin 或 API 同源页面。
-
-`GET /api/health` 用于进程存活检查，`GET /api/ready` 检查数据库连接、迁移版本和
-本地模型客户端配置；该检查不会发送真实模型请求。
-聊天客户端必须发送 `Idempotency-Key` 请求头；重试同一请求时必须复用原值。
-执行期间后端会续租，旧执行批次不能覆盖新重试已经接管的结果。
-
-每轮聊天先调用一次结构化语义预处理模型生成 `SemanticFrame`，再运行主 Agent。
-语义帧标记最终操作、改口、撤销、歧义、用户消息证据编号和置信度；用户原文仍是
-最终事实来源。只有主 Agent 明确调用工具形成计划，且最终决定与语义帧一致时才会
-写入。提醒变更、记忆变更、助手消息、指标和幂等响应会在同一 SQLite 事务提交。
-`preferred_time` 可以补全缺失钟点，但关键词、正则和固定错别字替换不会直接
-创建提醒；长期偏好候选由主 Agent 的结构化结果返回。
-
-当用户明确要求查询公开网络信息，或问题依赖会变化的外部事实时，语义预处理模型会
-生成独立、去隐私化的搜索词，由后端抓取必应前 5 条自然搜索结果。搜索使用现有
-`httpx` 与标准库解析器，不需要额外搜索 API 密钥。原始结果会先经过独立的结构化模型
-相关性门禁，只有能直接支持当前问题的证据才会交给主 Agent，并通过 `sources` 返回
-标题、链接和摘要。第一次结果全部无关时，门禁可以生成一个更宽但仍聚焦的检索词，
-最多额外搜索并筛选一次。搜索超时、限流、验证码、页面结构变化，或两次结果仍与问题
-没有直接关系时，聊天接口返回 `partial` 并明确说明无法核实，不会用模型旧知识冒充
-实时结果。
-
-Agent 内部提供提醒查询、创建、修改和删除工具。核对、修改或删除前会先读取真实
-提醒状态；只读查询不出现在公共 `tool_calls` 中。创建和改时间还会校验明确钟点或
-实际使用的时间记忆，并核对落库后的本地钟点与用户原话一致，不能把“早上”“晚上”
-等范围自行换成 8 点。每周提醒必须明确星期几，不能自行猜成当天或周日。
-
-提醒写操作采用语义门禁和确定性结构校验：模型同一轮提出多个创建、修改、删除时会
-在执行前整批拦截；单个写计划必须提交真实存在的用户消息编号，普通写操作必须包含
-当前消息。修改和删除前必须先查询真实提醒；使用时间记忆时必须引用本轮检索到且时间
-一致的记忆 ID。用户最终撤销、语义仍有歧义或计划与语义帧不一致时不会写入，并返回
-自然澄清说明。该策略不改变 REST API 字段。
-
-运行后端测试：
-
-```powershell
-python -m pytest backend\tests -q
-```
-
-配置 `.env` 后，可运行一次真实模型冒烟测试。该命令使用临时数据库，不会修改
-`backend/data/app.db`：
-
-```powershell
-python -m backend.tests.evaluation.run_live_model_smoke
-```
-
-运行包含错别字、模糊请求、前后修正、提示注入、用药安全、幂等和记忆覆盖的
-真实模型严苛评测：
-
-```powershell
-python -m backend.tests.evaluation.run_live_stress_evaluation
-```
-
-运行多轮高难度真实模型评测。该评测会在日期、钟点、周期和偏好等关键字段中
-加入合理的输入错误、逐步补充和前后修正：
-
-```powershell
-python -m backend.tests.evaluation.run_live_dialogue_evaluation
-```
-
-完整 40 轮攻击协议已经纳入版本控制，并会在计分前检查“重复创建”等目标是否真的
-出现在合成用户消息中。该命令会产生真实模型费用，必须在确认费用后运行；评测使用
-临时注册账号和临时数据库：
-
-```powershell
-python -m backend.tests.evaluation.run_live_adversarial_evaluation
-```
-
-## 前端
-
-```powershell
-Set-Location .\frontend
-npm.cmd run dev
-```
-
-前端地址：<http://127.0.0.1:5173>
-
-## 环境变量
-
-本地 `.env` 文件由 `.env.example` 创建，模型凭据默认为空。需要调用模型时，
-请填写 `MODEL_NAME`、`OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。不要提交 `.env`。
-
-图片理解使用独立的 `VISION_MODEL_NAME`、`VISION_API_KEY` 和
-`VISION_BASE_URL`。视觉 Key 或地址留空时，会兼容回退到对应的 `OPENAI_*`
-配置。图片请求不会发送到 LangSmith 链路追踪。
-
-认证配置默认值：
-
-```text
-SESSION_TTL_DAYS=180
-AUTH_COOKIE_SECURE=false
-AUTH_COOKIE_NAME=yoko_session
-```
-
-生产 HTTPS 环境必须使用 `AUTH_COOKIE_SECURE=true` 和
-`__Host-yoko_session` Cookie 名称。
-
-可选的 Web Push 在网页关闭后也能由后端投递到期提醒。生产环境配置如下；私钥只放在
-部署平台的 Secret 中，不能提交到仓库。浏览器首次授权后，前端会自动注册 Service
-Worker 和当前设备订阅。失效端点（HTTP 404/410）会自动停用，临时错误按指数退避重试。
-
-```text
-PUSH_ENABLED=true
-PUSH_POLL_SECONDS=15
-VAPID_PUBLIC_KEY=<URL-safe public key>
-VAPID_PRIVATE_KEY=<private key secret>
-VAPID_SUBJECT=mailto:admin@example.com
-```
-
-`MAX_REQUEST_BODY_BYTES` 默认为 `8388608`（8 MiB）；超限请求在业务解析前返回
-`413 REQUEST_TOO_LARGE`。该限制同时覆盖带和不带 `Content-Length` 的写请求。
-`MAX_CONCURRENT_CHAT_REQUESTS` 默认为 `4`；单实例达到上限时新聊天请求快速返回
-`429 TOO_MANY_ATTEMPTS`，避免长模型链无限排队。
-
-后端同时提供修改密码、JSON 账号数据导出和密码确认后的账号删除接口。API 默认附加
-安全响应头，并按 `.env.example` 中的 `RATE_LIMIT_*` 配置执行进程内限流；该实现适配
-当前单实例 SQLite 部署，多实例部署应改用网关或 Redis 共享限流。
-
-生成一致性 SQLite 备份并仅保留最新 14 份：
-
-```powershell
-python -m backend.scripts.backup_database --keep 14
-```
+- 当前部署目标是单实例 FastAPI + SQLite，不支持多个应用实例同时写同一数据库。
+- 免费搜索网页可能因验证码、限流或页面结构变化而暂时失败；系统会回退并拒绝无证据回答，但不能提供付费搜索 API 的可用性保证。
+- 记忆检索面向轻量规模设计；记忆数量很大时应升级全文或向量检索。
+- 本项目提供生活辅助，不替代医生诊断、紧急服务或专业医疗建议。

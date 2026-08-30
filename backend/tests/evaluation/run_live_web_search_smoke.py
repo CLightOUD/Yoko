@@ -37,8 +37,9 @@ def main() -> int:
                 return 1
             response = client.post(
                 "/api/chat",
+                headers={"Idempotency-Key": "live-web-search-smoke-2026"},
                 json={
-                    "message": "请联网查询 Python 官方文档主页，简单说明并给出来源。",
+                    "message": "请联网查询 GitHub 官方主页，简单说明并给出来源。",
                     "timezone": "Asia/Shanghai",
                 },
             )

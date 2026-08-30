@@ -10,10 +10,10 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
 
 const REQUEST_TIMEOUT_MS = 30000
 
-// 任一受保护接口确认登录过期时派发，认证状态统一回到登录页（见 API_SPEC 3.5）。
+// 任一受保护接口确认登录过期时派发，认证状态统一回到登录页。
 const UNAUTHORIZED_EVENT = 'yoko:unauthorized'
 
-// 统一错误对象：把 ErrorResponse 转成可判定的异常（见 API_SPEC 3.4）。
+// 统一错误对象：把后端 ErrorResponse 转成可判定的异常。
 export class ApiError extends Error {
   constructor({ code, message, details = null, requestId = null, status, retryAfter = null }) {
     super(message || `请求失败（HTTP ${status}）`)
@@ -124,7 +124,7 @@ export function getReadiness() {
   return request('/api/ready')
 }
 
-// 认证：见 API_SPEC 5.9
+// 认证
 export function registerUser({ username, password, display_name, timezone = DEFAULT_TIMEZONE }) {
   return request('/api/auth/register', {
     method: 'POST',

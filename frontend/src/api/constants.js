@@ -1,4 +1,4 @@
-// 默认时区（见 API_SPEC 5.9；当前用户由 Session 与 /api/auth/me 决定）
+// 默认时区；当前用户由 Session 与 /api/auth/me 决定。
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
 
 // 记忆范围 scope
@@ -67,7 +67,7 @@ export const CLIENT_ERROR_CODE = {
   REQUEST_TIMEOUT: 'REQUEST_TIMEOUT',
 }
 
-// 稳定错误码（见 API_SPEC 3.4）
+// 与后端 ErrorResponse 保持一致的稳定错误码。
 export const ERROR_CODE = {
   AUTHENTICATION_REQUIRED: 'AUTHENTICATION_REQUIRED',
   AUTHENTICATION_UNAVAILABLE: 'AUTHENTICATION_UNAVAILABLE',
