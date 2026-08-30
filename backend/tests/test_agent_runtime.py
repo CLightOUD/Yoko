@@ -350,6 +350,7 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
         model=FakeModel(),
         now=datetime(2026, 8, 26, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
         timezone="Asia/Shanghai",
+        normalized_request="查询乙机构2026年的申请条件",
         history=[
             {"role": "user", "content": "查甲机构今年的申请条件"},
             {"role": "assistant", "content": "暂时没有找到。"},
@@ -364,9 +365,46 @@ def test_search_planner_rewrites_follow_up_as_standalone_question() -> None:
     assert "宽泛问题" in calls[0][0].content
     assert "answer_scope" in calls[0][0].content
     assert "core_subject" in calls[0][0].content
+    assert "不能仅凭这些口语词擅自加入" in calls[0][0].content
+    assert "不能单独作为" in calls[0][0].content
     payload = json.loads(calls[0][1].content)
+    assert payload["normalized_request"] == "查询乙机构2026年的申请条件"
     assert payload["recent_history"][-1]["content"] == "乙机构呢"
     assert "draft" not in payload
+
+
+def test_semantic_preprocessor_does_not_add_freshness_to_generic_information_request() -> None:
+    calls: list[list[object]] = []
+
+    class FakeStructuredModel:
+        def invoke(self, messages: list[object]) -> dict:
+            calls.append(messages)
+            return {
+                "parsed": SemanticFrame(
+                    normalized_text="查询大连理工大学的信息",
+                    intent="web_search",
+                    confidence=0.95,
+                    requires_web=True,
+                    web_confidence=0.95,
+                ),
+                "raw": AIMessage(content=""),
+            }
+
+    class FakeModel:
+        def with_structured_output(self, *args: object, **kwargs: object) -> FakeStructuredModel:
+            return FakeStructuredModel()
+
+    result = ORIGINAL_PREPROCESS_SEMANTICS(
+        model=FakeModel(),
+        now=datetime(2026, 8, 30, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        timezone="Asia/Shanghai",
+        memories=[],
+        history=[{"role": "user", "content": "搜索大连理工大学的消息"}],
+    )
+
+    assert result.frame.normalized_text == "查询大连理工大学的信息"
+    assert "不能把泛指的" in calls[0][0].content
+    assert "最新消息" in calls[0][0].content
 
 
 def test_vision_context_marks_image_text_as_observation_data() -> None:
